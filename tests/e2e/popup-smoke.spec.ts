@@ -5,24 +5,24 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 /**
- * Smoke E2E para la browser extension.
+ * E2E smoke for the browser extension.
  *
  * Pre-requisitos:
- *   1. `npm run build` debe haber generado `.output/chrome-mv3/` con el manifest + bundles.
- *   2. Si `.output/chrome-mv3/` no existe, este test se skip con instrucciones.
+ *   1. `npm run build` must have generated `.output/chrome-mv3/` with the manifest + bundles.
+ *   2. If `.output/chrome-mv3/` does not exist, this test skips with instructions.
  *
  * Estrategia:
- *   - Lanzamos Chromium con la extension cargada via `--load-extension`.
- *   - Esperamos a que el service worker se registre.
- *   - Abrimos el popup directamente via chrome-extension://<id>/popup.html.
- *   - Verificamos que el popup renderiza sin errores en console.
+ *   - Start Chromium with the extension loaded via `--load-extension`.
+ *   - Wait for the service worker to register.
+ *   - Open the popup directly via chrome-extension://<id>/popup.html.
+ *   - Verify that the popup renders without console errors.
  *
  * Limitaciones:
- *   - No prueba interacción real con tabs/cookies/storage (eso requiere fixtures más elaboradas).
- *   - No funciona en Firefox (la API es distinta); para Firefox usar `web-ext run` en CI.
+ *   - Does not test real interaction with tabs/cookies/storage (that requires richer fixtures).
+ *   - Does not work in Firefox (the API is different); use `web-ext run` in CI for Firefox.
  */
 
-// `__dirname` no existe en ESM ("type": "module"); derivarlo de import.meta.url.
+// `__dirname` does not exist in ESM ("type": "module"); derive it from import.meta.url.
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const EXTENSION_BUILD_DIR = path.resolve(__dirname, '../../.output/chrome-mv3')
 
@@ -39,7 +39,7 @@ test.describe.configure({ mode: 'serial' })
 
 test('popup smoke, extension loads and popup renders', async () => {
   if (!fs.existsSync(EXTENSION_BUILD_DIR)) {
-    test.skip(true, `Extension no construida en ${EXTENSION_BUILD_DIR}. Corre 'npm run build' antes de e2e.`)
+    test.skip(true, `Extension not built at ${EXTENSION_BUILD_DIR}. Run 'npm run build' before e2e.`)
   }
 
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wxt-e2e-'))
@@ -55,8 +55,8 @@ test('popup smoke, extension loads and popup renders', async () => {
     })
 
     // Esperar service worker (registra en background.ts). En algunos runners
-    // headless Chromium carga el build pero no expone el service worker; en ese
-    // caso caemos a un smoke estatico del output generado.
+    // headless Chromium loads the build but does not expose the service worker; in that
+    // case, fall back to a static smoke check of the generated output.
     let serviceWorker = context.serviceWorkers()[0]
     if (!serviceWorker) {
       try {
@@ -80,7 +80,7 @@ test('popup smoke, extension loads and popup renders', async () => {
     const popupPage = await context.newPage()
     await popupPage.goto(`chrome-extension://${extensionId}/popup.html`)
 
-    // Smoke mínimo: popup carga sin "Cannot read properties" ni errores de bundle.
+    // Minimal smoke: popup loads without "Cannot read properties" or bundle errors.
     await expect(popupPage.locator('body')).toBeVisible()
 
     const consoleErrors: string[] = []
@@ -88,7 +88,7 @@ test('popup smoke, extension loads and popup renders', async () => {
       if (msg.type() === 'error') consoleErrors.push(msg.text())
     })
 
-    await popupPage.waitForTimeout(500) // dejar que React monte
+    await popupPage.waitForTimeout(500) // let React mount
     expect(consoleErrors, `Console errors: ${consoleErrors.join('; ')}`).toHaveLength(0)
   } finally {
     if (context) await context.close()

@@ -40,7 +40,7 @@ export default [
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
 
-      // NN #24 Accessibility (SOP 64), reglas criticas para popup/options pages
+      // NN #24 Accessibility (SOP 64), critical rules for popup/options pages
       'jsx-a11y/alt-text': 'error',
       'jsx-a11y/anchor-is-valid': 'error',
       'jsx-a11y/click-events-have-key-events': 'error',

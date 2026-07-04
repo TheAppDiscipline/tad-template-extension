@@ -71,7 +71,7 @@
 
 ## 10) LLM Contracts
 - AI_FEATURES=none by default.
-- If enabled, define prompt/schema/eval contracts in Paso 2.5 before production use.
+- If enabled, define prompt/schema/eval contracts in Step 2.5 before production use.
 
 ## 11) Universal Definition of Done
 - `npm run gate` green.

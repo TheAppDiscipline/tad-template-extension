@@ -14,7 +14,7 @@ export default function App() {
     <main style={{ padding: 'var(--space-4)' }}>
       <h1 style={{ fontSize: 'var(--text-lg)', margin: 0 }}>Discipline Loop Extension</h1>
       <p style={{ color: 'var(--color-fg-muted)', marginTop: 'var(--space-2)' }}>
-        Popup placeholder. Replace with your first slice (see Paso 5).
+        Popup placeholder. Replace with your first slice (see Step 5).
       </p>
       <p style={{ marginTop: 'var(--space-3)' }}>
         Stored count: <strong>{count}</strong>

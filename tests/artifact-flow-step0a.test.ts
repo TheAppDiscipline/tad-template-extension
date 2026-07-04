@@ -7,7 +7,7 @@ describe('Step 0a artifact flow', () => {
     expect(VALID_STEPS).not.toContain('0.1')
     expect(STEP_ASSEMBLY_MAP['0a']).toMatchObject({
       step: '0a',
-      outputFile: 'paso-0a-input.md',
+      outputFile: 'step-0a-input.md',
     })
   })
 })

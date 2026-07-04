@@ -1,6 +1,6 @@
 # .discipline-os/ — Maintenance Automation (Discipline Loop)
 
-Scripts to keep solo-builder maintenance from becoming "intention without habit". See vault note `83 - Mantenimiento Solo` for doctrine.
+Scripts to keep solo-builder maintenance from becoming "intention without habit". The doctrine behind them lives in The App Discipline vault (sold separately).
 
 ## Setup
 

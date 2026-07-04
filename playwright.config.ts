@@ -1,8 +1,8 @@
 import { defineConfig, devices } from '@playwright/test'
 
-// E2E smoke para extension Manifest V3.
-// Requiere: `npm run build` antes de correr e2e (Playwright carga el extension desde .output/chrome-mv3/).
-// El test arranca Chromium con la extension cargada y verifica el popup.
+// E2E smoke for the Manifest V3 extension.
+// Requires `npm run build` before running e2e (Playwright loads the extension from .output/chrome-mv3/).
+// The test starts Chromium with the extension loaded and verifies the popup.
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,

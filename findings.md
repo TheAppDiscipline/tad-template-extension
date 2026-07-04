@@ -11,13 +11,13 @@
 
 ## Decisions
 
-### 2026-04-19 · Template creado
+### 2026-04-19 · Template created
 
 - Lane: EXTENSION (WXT + React + TypeScript, Manifest V3).
 - Cross-browser target: Chromium + Firefox. Safari is out of scope for this template base.
 - Canonical pattern: free extension + sidecar web app for Pro tier. No billing in-extension.
 
-### 2026-04-19 · Plumbing completo portado
+### 2026-04-19 · Plumbing fully ported
 
 - `tools/discipline/` copied from `tad-template-web`.
 - Runtime: `tsx` executes `.ts` tools directly.

@@ -24,7 +24,7 @@ export default function OptionsApp() {
     >
       <h1>Options</h1>
       <p style={{ color: 'var(--color-fg-muted)' }}>
-        Configuración persistida en <code>browser.storage.sync</code>.
+        Settings persisted in <code>browser.storage.sync</code>.
       </p>
 
       <section style={{ marginTop: 'var(--space-5)' }}>

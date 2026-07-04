@@ -1,242 +1,242 @@
 ---
 name: discipline-overengineering-check
-description: "Detect over-engineering and under-engineering signals against the Anti-overengineering Doctrine in the vault. Reads discipline.md + package.json + progress.md + git log; flags deps per slice ratio, premature abstractions, skipped gates, or sub-engineering (RLS off, secrets in client). Triggers on /discipline-overengineering-check, 'check overengineering', 'auditar complejidad'."
+description: "Flag over-engineering and under-engineering signals in the current project against the Anti-overengineering Doctrine from The App Discipline vault (sold separately). Reads discipline.md + package.json + progress.md + git log; flags the deps-per-slice ratio, premature abstractions, skipped gates, or under-engineering (RLS off, secrets in the client). Triggers on /discipline-overengineering-check, 'check overengineering', 'scope check', 'audit complexity'."
 ---
 
-# /discipline-overengineering-check - Detectar over/under engineering en el proyecto
+# /discipline-overengineering-check - Detect over/under engineering in the project
 
-Este skill auto-aplica las 10 reglas de la Anti-overengineering Doctrine (en el vault) contra el estado actual del proyecto. Reporta señales con confidence (clear violation / probable / possible) y sugiere acción concreta.
+This skill auto-applies the 10 rules of the Anti-overengineering Doctrine (in the vault, sold separately) against the current state of the project. It reports signals with a confidence level (clear violation / probable / possible) and suggests a concrete action.
 
-NOTA: el skill es advisory, no bloqueante. Las decisiones de scope siguen siendo del usuario; el skill solo señala cuando los patrones huelen a over o under engineering.
+NOTE: this skill is advisory, non-blocking. Scope decisions still belong to the user; the skill only flags when the patterns smell like over- or under-engineering.
 
-## Lo que el usuario ve
+## What the user sees
 
-1. El skill lee 4 fuentes: `discipline.md`, `package.json`, `progress.md`, `git log` últimos 30 días.
-2. Aplica los 10 chequeos de la doctrina (5 de over, 5 de under).
-3. Reporta tabla por chequeo con: signal (clear / probable / possible), evidencia, regla violada, acción sugerida.
-4. Resume al final: cuántos clear, cuántos probable, top 3 acciones por impacto.
-5. Registra en `findings.md §Audits` como `audit-overengineering`.
+1. The skill reads 4 sources: `discipline.md`, `package.json`, `progress.md`, and the last 30 days of `git log`.
+2. It applies the 10 checks from the doctrine (5 for over, 5 for under).
+3. It reports a table per check with: signal (clear / probable / possible), evidence, rule violated, suggested action.
+4. It summarizes at the end: how many clear, how many probable, top 3 actions by impact.
+5. It records the result in `findings.md §Audits` as `audit-overengineering`.
 
-## Prerrequisitos
+## Prerequisites
 
-- Repo con `.discipline/`, `discipline.md`, `progress.md`, `task_plan.md`.
-- Git inicializado (necesario para evaluar deps por slice ratio y patrones de commits).
-- `package.json` legible.
+- Repo with `.discipline/`, `discipline.md`, `progress.md`, `task_plan.md`.
+- Git initialized (needed to evaluate the deps-per-slice ratio and commit patterns).
+- Readable `package.json`.
 
 ---
 
-## Implementacion interna
+## Internal implementation
 
-### Fase 0: Recoger contexto
+### Phase 0: Gather context
 
-Leer:
-- `discipline.md §0` para PROFILE, LANE, AI_FEATURES, SYNC_MODE, COLLAB_MODE.
-- `package.json` para `dependencies` + `devDependencies` count.
-- `progress.md` para slices declarados done (count de `## Slice` con outcome=done o `[x]`).
-- `task_plan.md §Ready Slices` o equivalente.
+Read:
+- `discipline.md §0` for PROFILE, LANE, AI_FEATURES, SYNC_MODE, COLLAB_MODE.
+- `package.json` for the `dependencies` + `devDependencies` count.
+- `progress.md` for slices declared done (count of `## Slice` with outcome=done or `[x]`).
+- `task_plan.md §Ready Slices` or equivalent.
 - `git log --since="30 days ago" --oneline` (count + sample).
-- `git log --since="30 days ago" --name-only` para detectar carpetas/archivos creados.
-- `findings.md §Tech Debt` si existe.
+- `git log --since="30 days ago" --name-only` to detect created folders/files.
+- `findings.md §Tech Debt` if it exists.
 
-Capturar para uso en chequeos:
-- N_DEPS = count de runtime dependencies
-- N_DEV_DEPS = count de devDependencies
+Capture for use in the checks:
+- N_DEPS = count of runtime dependencies
+- N_DEV_DEPS = count of devDependencies
 - N_SLICES_DONE
 - N_COMMITS_30D
-- N_NEW_FOLDERS_SRC = nuevas carpetas en src/ últimos 30 días (heuristica de abstracciones)
+- N_NEW_FOLDERS_SRC = new folders in src/ over the last 30 days (abstraction heuristic)
 - PROFILE
-- DAYS_SINCE_INIT = días desde primer commit
+- DAYS_SINCE_INIT = days since the first commit
 
-### Fase 1: Chequeos de OVER engineering (5 reglas)
+### Phase 1: OVER engineering checks (5 rules)
 
-Cada chequeo devuelve: `clear` (alta confianza), `probable` (40-70% confidence), `possible` (alerta débil), o `none`.
+Each check returns: `clear` (high confidence), `probable` (40-70% confidence), `possible` (weak alert), or `none`.
 
-#### Check OE-1: Demasiadas deps para el profile
+#### Check OE-1: Too many deps for the profile
 
-**Regla 11c §1, §3:** complejidad justificada por dolor real. Profile LITE no debería pasar de ~10 deps; FAMILY_SYNC ~20; LAUNCH/PROD pueden subir.
+**Rule 11c §1, §3:** complexity justified by real pain. A LITE profile should not go past ~10 deps; FAMILY_SYNC ~20; LAUNCH/PROD can go higher.
 
-**Logica:**
-- LITE + N_DEPS > 10 → `probable`
-- LITE + N_DEPS > 15 → `clear`
-- FAMILY_SYNC + N_DEPS > 25 → `probable`
-- FAMILY_SYNC + N_DEPS > 35 → `clear`
-- LAUNCH/PROD: warning solo si crecimiento > 5 deps en últimos 30 días sin slices nuevos.
+**Logic:**
+- LITE + N_DEPS > 10 -> `probable`
+- LITE + N_DEPS > 15 -> `clear`
+- FAMILY_SYNC + N_DEPS > 25 -> `probable`
+- FAMILY_SYNC + N_DEPS > 35 -> `clear`
+- LAUNCH/PROD: warn only if growth is > 5 deps over the last 30 days with no new slices.
 
-**Acción:** revisar deps con `npm ls --depth=0`; pregunta NN #16 Scope Guard, ¿esta dep tiene 1-5 líneas de implementación equivalente y dolor observado?
+**Action:** review deps with `npm ls --depth=0`; ask the NN #16 Scope Guard question, does this dep have a 1-5 line equivalent implementation and observed pain?
 
-#### Check OE-2: Deps por slice ratio (deps/slice)
+#### Check OE-2: Deps-per-slice ratio (deps/slice)
 
-**Regla 11c §3:** dependency hostil al budget.
+**Rule 11c §3:** a dependency hostile to the budget.
 
-**Logica:**
-- Si N_DEPS / max(N_SLICES_DONE, 1) > 5 → `probable`
-- Si N_DEPS / max(N_SLICES_DONE, 1) > 8 y profile LITE/FAMILY_SYNC → `clear`
+**Logic:**
+- If N_DEPS / max(N_SLICES_DONE, 1) > 5 -> `probable`
+- If N_DEPS / max(N_SLICES_DONE, 1) > 8 and profile LITE/FAMILY_SYNC -> `clear`
 
-**Acción:** lista de deps NO importadas en src/ activamente (orphans); proponer remoción.
+**Action:** list the deps NOT actively imported in src/ (orphans); propose removal.
 
-#### Check OE-3: Abstracciones prematuras
+#### Check OE-3: Premature abstractions
 
-**Regla 11c §4:** regla de tres, no abstraigas con 2 instancias.
+**Rule 11c §4:** rule of three, do not abstract with 2 instances.
 
-**Logica:**
-- Detectar carpetas en src/ con nombre `helpers/`, `utils/`, `lib/`, `core/`, `abstract/`, `interfaces/` con < 2 archivos cada una → `possible`
-- Detectar carpeta `models/` o `types/` con archivos >300 lineas y solo 1 consumidor en src/ (grep cross-import) → `probable`
-- Carpeta `services/` con 1 servicio que tiene 1 método y 1 caller → `clear`
+**Logic:**
+- Detect folders in src/ named `helpers/`, `utils/`, `lib/`, `core/`, `abstract/`, `interfaces/` with < 2 files each -> `possible`
+- Detect a `models/` or `types/` folder with files >300 lines and only 1 consumer in src/ (cross-import grep) -> `probable`
+- A `services/` folder with 1 service that has 1 method and 1 caller -> `clear`
 
-**Acción:** sugerir inlinar el código de la abstracción en el caller único hasta que aparezca segundo caller.
+**Action:** suggest inlining the abstraction's code into the single caller until a second caller shows up.
 
 #### Check OE-4: Gate skipping signal
 
-**Regla 11c §6, §7:** gate correcto para la fase.
+**Rule 11c §6, §7:** the right gate for the phase.
 
-**Logica:**
-- Buscar en git log últimos 30 días commits con mensajes que contengan `skip gate`, `--no-verify`, `bypass gate`, `WIP`, `quick fix without test`, `temporary` → cada hit es `possible`.
-- Buscar en `findings.md §Tech Debt` items que mencionen "skipped gate" → `probable`.
-- Si N_COMMITS_30D > 50 y N_TESTS estática (no creció) → `probable` (commits sin tests).
+**Logic:**
+- Search the last 30 days of git log for commits whose messages contain `skip gate`, `--no-verify`, `bypass gate`, `WIP`, `quick fix without test`, `temporary` -> each hit is `possible`.
+- Search `findings.md §Tech Debt` for items that mention "skipped gate" -> `probable`.
+- If N_COMMITS_30D > 50 and N_TESTS is static (did not grow) -> `probable` (commits without tests).
 
-**Acción:** correr `npm run gate:strict` en el commit actual; revisar deuda técnica documentada.
+**Action:** run `npm run gate:strict` on the current commit; review the documented tech debt.
 
 #### Check OE-5: Pipeline overhead vs scope
 
-**Regla 11c §2, §8:** scope del profile + packets mínimos viables.
+**Rule 11c §2, §8:** profile scope + minimum viable packets.
 
-**Logica:**
-- LITE + cada slice produciendo todos los 19 packets posibles → `clear` (overkill).
-- LITE + `.discipline/scorecard.yaml` con >50 entries → `probable`.
-- FAMILY_SYNC + sin Sentry preinstalado y > 5 slices done → `possible` (under-overhead, mira OE5 inverso en sub-eng).
+**Logic:**
+- LITE + every slice producing all 19 possible packets -> `clear` (overkill).
+- LITE + `.discipline/scorecard.yaml` with >50 entries -> `probable`.
+- FAMILY_SYNC + no Sentry preinstalled and > 5 slices done -> `possible` (under-overhead, see the inverse of OE5 under under-engineering).
 
-**Acción:** podar packets a los 7 mínimos para LITE; deferrar scorecard YAML hasta LAUNCH.
+**Action:** prune packets down to the 7 minimum for LITE; defer the scorecard YAML until LAUNCH.
 
-### Fase 2: Chequeos de UNDER engineering (5 reglas)
+### Phase 2: UNDER engineering checks (5 rules)
 
-Equivalente al opuesto, NN-related. Las reglas vienen de 11c §"Señales de sub-ingeniería".
+The mirror image, NN-related. The rules come from 11c §"Under-engineering signals".
 
-#### Check UE-1: RLS desactivado en tablas con PII
+#### Check UE-1: RLS disabled on tables with PII
 
-**Logica:**
-- Si BACKEND_PROVIDER=SUPABASE: leer migrations, detectar `CREATE TABLE` sin posterior `ENABLE ROW LEVEL SECURITY` o sin policies.
-- Si la tabla tiene columnas que parecen PII (`email`, `name`, `phone`, `address`, `dob`) → `clear` cuando RLS off.
+**Logic:**
+- If BACKEND_PROVIDER=SUPABASE: read the migrations, detect `CREATE TABLE` with no following `ENABLE ROW LEVEL SECURITY` or with no policies.
+- If the table has columns that look like PII (`email`, `name`, `phone`, `address`, `dob`) -> `clear` when RLS is off.
 
-**Acción:** correr `/discipline-audit rls` (audit 2 de 48c) para reporte detallado y fixes.
+**Action:** run `/discipline-audit rls` (audit 2 of the self-audit prompt set in The App Discipline vault, sold separately) for a detailed report and fixes.
 
-#### Check UE-2: Secrets en cliente
+#### Check UE-2: Secrets in the client
 
-**Logica:**
-- Grep en `src/**/*.{ts,tsx,js}` por patrones `SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_SECRET_KEY`, `OPENAI_API_KEY` (sin `process.env` wrapping) → `clear`.
-- Detectar imports de `@supabase/supabase-js` con literal de API key → `clear`.
+**Logic:**
+- Grep `src/**/*.{ts,tsx,js}` for the patterns `SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_SECRET_KEY`, `OPENAI_API_KEY` (without `process.env` wrapping) -> `clear`.
+- Detect imports of `@supabase/supabase-js` with a literal API key -> `clear`.
 
-**Acción:** rotar secret inmediatamente; correr `/discipline-audit secrets` (audit 8) para gitleaks scan + remediation plan.
+**Action:** rotate the secret immediately; run `/discipline-audit secrets` (audit 8) for a gitleaks scan + remediation plan.
 
-#### Check UE-3: catch {} vacíos
+#### Check UE-3: Empty catch {}
 
-**Logica:**
-- ESLint rule `no-empty` ya catches esto (NN #18). Verificar si está activa en eslint.config.js.
-- Si la regla está disabled o set a `warn`, marcar `probable`.
+**Logic:**
+- The ESLint rule `no-empty` already catches this (NN #18). Verify it is active in eslint.config.js.
+- If the rule is disabled or set to `warn`, mark `probable`.
 
-**Acción:** activar `'no-empty': ['error', { allowEmptyCatch: false }]` en eslint config y correr lint.
+**Action:** enable `'no-empty': ['error', { allowEmptyCatch: false }]` in the eslint config and run lint.
 
-#### Check UE-4: Queries sin LIMIT
+#### Check UE-4: Queries without LIMIT
 
-**Logica:**
-- Grep `.from('<tabla>').select` sin `.limit(...)` → `probable` (cada hit).
-- `npm run check-queries` ya detecta esto post-Wave 3.1.
+**Logic:**
+- Grep `.from('<table>').select` without `.limit(...)` -> `probable` (each hit).
+- `npm run check-queries` already detects this as of Wave 3.1.
 
-**Acción:** correr `npm run check-queries` o `/discipline-audit query-discipline` (audit 11).
+**Action:** run `npm run check-queries` or `/discipline-audit query-discipline` (audit 11).
 
-#### Check UE-5: Sin Sentry/observabilidad en app pública
+#### Check UE-5: No Sentry/observability in a public app
 
-**Logica:**
-- PROFILE >= LAUNCH y `package.json` sin `@sentry/*` ni `posthog-js` → `clear`.
-- PROFILE = FAMILY_SYNC y app desplegada (detectar via `discipline:status` o git tags como `v0.x`) y sin observabilidad → `probable`.
+**Logic:**
+- PROFILE >= LAUNCH and `package.json` without `@sentry/*` or `posthog-js` -> `clear`.
+- PROFILE = FAMILY_SYNC and the app is deployed (detect via `discipline:status` or git tags like `v0.x`) and there is no observability -> `probable`.
 
-**Acción:** instalar Sentry mínimo para Gate D; ver la doctrina de seguridad esencial en el vault (producto aparte) o equivalente.
+**Action:** install a minimal Sentry for Gate D; see the essential-security doctrine in the vault (sold separately) or equivalent.
 
-### Fase 3: Reportar
+### Phase 3: Report
 
-Tabla agregada:
+Aggregate table:
 
 ```markdown
 ## Discipline Loop · Overengineering / Underengineering Check
 
-**Generado:** <fecha>
+**Generated:** <date>
 **Profile:** <profile>
-**Estado:** <N clears> · <N probables> · <N possibles>
+**Status:** <N clears> · <N probables> · <N possibles>
 
 ### Over engineering
 
-| Check | Signal | Evidencia | Regla violada | Acción |
+| Check | Signal | Evidence | Rule violated | Action |
 |---|---|---|---|---|
-| OE-1 deps por profile | clear | 18 deps en LITE (límite ~10) | NN #16 Scope Guard, 11c §1 | Revisar `npm ls --depth=0`; podar deps no esenciales |
-| OE-2 deps/slice ratio | probable | 6.0 (limite 5.0) | 11c §3 | Listar deps orphan |
+| OE-1 deps per profile | clear | 18 deps in LITE (limit ~10) | NN #16 Scope Guard, 11c §1 | Review `npm ls --depth=0`; prune non-essential deps |
+| OE-2 deps/slice ratio | probable | 6.0 (limit 5.0) | 11c §3 | List orphan deps |
 | ... | ... | ... | ... | ... |
 
 ### Under engineering
 
-| Check | Signal | Evidencia | Regla violada | Acción |
+| Check | Signal | Evidence | Rule violated | Action |
 |---|---|---|---|---|
-| UE-1 RLS | none | Todas las tablas con PII tienen RLS + policies | NN #17.3 | OK |
+| UE-1 RLS | none | All tables with PII have RLS + policies | NN #17.3 | OK |
 | ... | ... | ... | ... | ... |
 
-### Top 3 acciones por impacto
+### Top 3 actions by impact
 
-1. <accion mas crítica entre los clear>
+1. <the most critical action among the clears>
 2. ...
 3. ...
 
-### Veredicto general
+### Overall verdict
 
-<En balance | Sobre-ingeniado | Sub-ingeniado | Mixto>
+<In balance | Over-engineered | Under-engineered | Mixed>
 ```
 
-### Fase 4: Registrar en findings.md
+### Phase 4: Record in findings.md
 
 ```markdown
 ## Audits
 
-- <fecha> · audit-overengineering · clears=<N> · probables=<N> · top-action=<accion>
+- <date> · audit-overengineering · clears=<N> · probables=<N> · top-action=<action>
 ```
 
-Si hay `clear` UE-1 (RLS off con PII) o UE-2 (secrets en cliente), también agregar a `findings.md §Risks`:
+If there is a `clear` UE-1 (RLS off with PII) or UE-2 (secrets in the client), also add to `findings.md §Risks`:
 ```markdown
-- <fecha> · CRITICAL · audit-overengineering UE-2 detecta API key hardcoded en src/<archivo> · rotar inmediatamente.
+- <date> · CRITICAL · audit-overengineering UE-2 detected a hardcoded API key in src/<file> · rotate immediately.
 ```
 
-### Fase 5: Resumen al usuario
+### Phase 5: Summary to the user
 
 ```
-Overengineering Check completado.
+Overengineering Check complete.
 
 OVER engineering: <N clears> / <N probables> / <N possibles>
 UNDER engineering: <N clears> / <N probables> / <N possibles>
 
-Top 3 acciones:
+Top 3 actions:
 1. ...
 2. ...
 3. ...
 
-Veredicto: <En balance | Sobre-ingeniado | Sub-ingeniado | Mixto>
+Verdict: <In balance | Over-engineered | Under-engineered | Mixed>
 
-Detalle: findings.md §Audits.
+Detail: findings.md §Audits.
 
-Nota: este skill es advisory. El usuario decide si los signals justifican accion. Para signals `clear`, especialmente UE-1/UE-2, accion es practicamente obligatoria antes de Gate D.
+Note: this skill is advisory. The user decides whether the signals justify action. For `clear` signals, especially UE-1/UE-2, action is practically mandatory before Gate D.
 ```
 
 ---
 
-## Manejo de errores
+## Error handling
 
-- Repo sin git: marcar OE-4 (gate skipping) como N/A, otros checks corren normalmente.
-- progress.md vacío o ausente: aplicar checks asumiendo N_SLICES_DONE = 0; eso amplifica deps/slice ratio detection.
-- discipline.md sin PROFILE: usar default FAMILY_SYNC para los thresholds.
-- src/ vacío (template recién hidratado): la mayoría de checks devuelven `none`; reportar que el repo está en estado prematuro.
+- Repo without git: mark OE-4 (gate skipping) as N/A; the other checks run normally.
+- progress.md empty or absent: apply the checks assuming N_SLICES_DONE = 0; that amplifies the deps/slice ratio detection.
+- discipline.md without PROFILE: use the default FAMILY_SYNC for the thresholds.
+- src/ empty (freshly hydrated template): most checks return `none`; report that the repo is in a premature state.
 
 ---
 
-## Reglas críticas
+## Critical rules
 
-- Los signals son advisory, no bloqueantes. No fail el gate ni bloquear merges.
-- `clear` UE-1 y UE-2 (RLS off + secrets en cliente) son los más urgentes; priorizarlos en top-3.
-- No sugerir REMOVER deps en bloque sin verificar imports; "orphan" es heurística (puede ser dep usada via require dinámico o config).
-- No marcar abstracción como prematura sin verificar que solo hay 1-2 callers (regla de tres).
-- Tiempo objetivo: <2 minutos para todo el reporte.
-- Si el usuario invoca el skill mensualmente, registrar tendencia en findings.md (ej: "deps creciendo +5 desde último audit").
+- The signals are advisory, non-blocking. Do not fail the gate or block merges.
+- `clear` UE-1 and UE-2 (RLS off + secrets in the client) are the most urgent; prioritize them in the top 3.
+- Do not suggest REMOVING deps in bulk without verifying imports; "orphan" is a heuristic (it could be a dep used via dynamic require or config).
+- Do not mark an abstraction as premature without verifying there are only 1-2 callers (rule of three).
+- Target time: <2 minutes for the whole report.
+- If the user invokes the skill monthly, record the trend in findings.md (e.g. "deps growing +5 since the last audit").

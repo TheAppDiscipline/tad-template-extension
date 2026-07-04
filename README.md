@@ -47,8 +47,8 @@ npm run gate:full
 
 # Generate store-ready zips
 npm run zip
-# → .output/*-chrome.zip  → Chrome Web Store
-# → .output/*-firefox.zip → Firefox AMO
+# -> .output/*-chrome.zip  -> Chrome Web Store
+# -> .output/*-firefox.zip -> Firefox AMO
 ```
 
 ## Configure your extension
@@ -74,6 +74,6 @@ Do not put billing or full OAuth inside the extension — it is fragile and viol
 
 ## Manifest V3 notes
 
-- Ephemeral service worker (shuts down after ~30 s of inactivity) → use `browser.storage.*`, never module-level variables for state.
+- Ephemeral service worker (shuts down after ~30 s of inactivity) -> use `browser.storage.*`, never module-level variables for state.
 - Strict CSP: **no `eval()` or `new Function()`**. Audit deps before adding them.
 - No remote code at runtime: all executable JS ships bundled in the zip. Remote configuration/data can still be fetched.

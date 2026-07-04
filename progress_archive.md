@@ -1,4 +1,4 @@
 # progress_archive.md
 
-> Archivo histórico de slices antiguos podados desde `progress.md`. Se
-> añade al final; no se reordena ni se reescribe.
+> Historical archive of old slices pruned from `progress.md`. It
+> is append-only; do not reorder or rewrite it.

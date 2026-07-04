@@ -5,9 +5,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// Extension corre con vitest; este archivo reimplementa en vitest los mismos casos
-// que tooling.discipline.test.js valida en los otros lanes para audit-merge.ts.
-// audit-merge.ts es byte-identico en los 4 templates.
+// Extension runs with vitest; this file reimplements the same cases in vitest
+// that tooling.discipline.test.js validates in the other lanes for audit-merge.ts.
+// audit-merge.ts is byte-identical across the 4 templates.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '..')
@@ -45,8 +45,8 @@ function envelope(overrides: Record<string, unknown> = {}): string {
   })
 }
 
-describe('audit-merge (paso determinista del fan-out 7.2)', () => {
-  it('fusiona envelopes validos y computa global PASS (exit 0)', () => {
+describe('audit-merge (deterministic step of fan-out 7.2)', () => {
+  it('merges valid envelopes and computes global PASS (exit 0)', () => {
     const dir = writeRawAudit({
       'a.json': envelope({ agent: 'discipline-rls-auditor', status: 'PASS' }),
       'b.json': envelope({ agent: 'discipline-a11y-checker', status: 'PASS' }),
@@ -61,7 +61,7 @@ describe('audit-merge (paso determinista del fan-out 7.2)', () => {
     expect(report.agents.length).toBe(2)
   })
 
-  it('global FAIL si algun agente FAIL; advisory (exit 0) salvo --strict (exit 1)', () => {
+  it('global FAIL if any agent FAILs; advisory (exit 0) unless --strict (exit 1)', () => {
     const failFinding = { severity: 'critical', rule: 'NN 17.3', location: 'm.sql:1', detail: 'x', fix: null }
     const dir = writeRawAudit({
       'a.json': envelope({ status: 'PASS' }),
@@ -75,7 +75,7 @@ describe('audit-merge (paso determinista del fan-out 7.2)', () => {
     expect(strict.status, out(strict)).toBe(1)
   })
 
-  it('WARN si hay moderate pero ningun FAIL', () => {
+  it('WARN if there is a moderate finding but no FAIL', () => {
     const mod = { severity: 'moderate', rule: 'scope-creep', location: 'x.ts', detail: 'd', fix: 'f' }
     const dir = writeRawAudit({
       'a.json': envelope({ status: 'PASS' }),
@@ -89,7 +89,7 @@ describe('audit-merge (paso determinista del fan-out 7.2)', () => {
     expect(report.counts.moderate).toBe(1)
   })
 
-  it('envelope fuera de schema falla claro (exit 2), no fusiona', () => {
+  it('envelope outside schema fails clearly (exit 2), does not merge', () => {
     const dir = writeRawAudit({
       'a.json': envelope({ status: 'PASS' }),
       'bad.json': envelope({ status: 'BROKEN' }),
@@ -108,7 +108,7 @@ describe('audit-merge (paso determinista del fan-out 7.2)', () => {
     expect(JSON.parse(fs.readFileSync(outFile, 'utf8')).global_status).toBe('PASS')
   })
 
-  it('acepta location y fix nulos', () => {
+  it('accepts null location and fix', () => {
     const finding = { severity: 'critical', rule: 'legal-docs-present', location: null, detail: 'no privacy policy', fix: null }
     const dir = writeRawAudit({
       'a.json': envelope({ agent: 'discipline-legal-product-auditor', status: 'FAIL', findings: [finding], summary: '1 critical' }),
@@ -121,7 +121,7 @@ describe('audit-merge (paso determinista del fan-out 7.2)', () => {
     expect(report.findings[0].fix).toBe(null)
   })
 
-  it('sin --raw-dir o carpeta vacia falla claro (exit 2)', () => {
+  it('without --raw-dir or with an empty folder fails clearly (exit 2)', () => {
     const noArg = runMerge([])
     expect(noArg.status, out(noArg)).toBe(2)
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'discipline-audit-empty-'))
@@ -129,7 +129,7 @@ describe('audit-merge (paso determinista del fan-out 7.2)', () => {
     expect(empty.status, out(empty)).toBe(2)
   })
 
-  it('--expected completo → PASS, missing_agents vacio', () => {
+  it('complete --expected -> PASS, empty missing_agents', () => {
     const dir = writeRawAudit({
       'a.json': envelope({ agent: 'discipline-scope-guard', status: 'PASS' }),
       'b.json': envelope({ agent: 'discipline-security-reviewer', status: 'PASS' }),
@@ -142,7 +142,7 @@ describe('audit-merge (paso determinista del fan-out 7.2)', () => {
     expect(report.missing_agents).toEqual([])
   })
 
-  it('--expected faltante → WARN + missing_agents (advisory exit 0)', () => {
+  it('missing --expected -> WARN + missing_agents (advisory exit 0)', () => {
     const dir = writeRawAudit({
       'a.json': envelope({ agent: 'discipline-scope-guard', status: 'PASS' }),
     })
@@ -154,7 +154,7 @@ describe('audit-merge (paso determinista del fan-out 7.2)', () => {
     expect(report.missing_agents).toEqual(['discipline-security-reviewer'])
   })
 
-  it('--expected faltante + --strict → exit no-cero', () => {
+  it('missing --expected + --strict -> exit non-zero', () => {
     const dir = writeRawAudit({
       'a.json': envelope({ agent: 'discipline-scope-guard', status: 'PASS' }),
     })

@@ -1,7 +1,7 @@
 # run-log.md
 
-Registro acumulativo de ejecuciones del pipeline Discipline Loop. Formato tabular.
+Cumulative record of Discipline Loop pipeline runs. Keep entries short and evidence-based.
 
-| Fecha | Paso | Herramienta | Inputs | Outputs | Notas |
+| Date | Step | Tool | Inputs | Outputs | Notes |
 |---|---|---|---|---|---|
-| 2026-04-19 | 0 | Template | scaffold inicial | tad-template-extension v0.1.0 | Lane EXTENSION promocionado a Producción (SD-02 revisión 2026-04-19) |
+| 2026-04-19 | 0 | Template | initial scaffold | tad-template-extension v0.1.0 | Extension lane promoted to production readiness review. |
