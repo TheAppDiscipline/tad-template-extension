@@ -30,7 +30,7 @@ export function readDisciplineConfig(projectRoot: string): DisciplineConfig {
     syncMode: (switches['SYNC_MODE'] || 'FAST_UI') as SyncMode,
     aiFeatures: switches['AI_FEATURES'] === 'enabled' ? 'enabled' : 'none',
     pushPlugin: switches['PUSH_PLUGIN'] === 'true',
-    lane: (switches['LANE'] || 'WEB') as Lane,
+    lane: (switches['LANE'] || 'EXTENSION') as Lane,
     hosting: switches['HOSTING'] || '',
   };
 }

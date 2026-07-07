@@ -15,7 +15,7 @@ Discipline Loop Browser Extension template. **Chromium + Firefox** cross-browser
 - **Gates:** lint + tsc + tests + tokens + secrets + `check-manifest` (validates MV3) + `check-bundle-extension` (zip < 10 MB)
 - **Canonical Discipline Loop files:** `discipline.md`, `task_plan.md`, `findings.md`, `progress.md`, `progress_archive.md`, `AGENTS.md` (agent instructions; `CLAUDE.md` is a stub that imports it for Claude Code)
 - **`.discipline/` folder** ready for packets, patches, paste-ready, run-log
-- **Complete `tools/discipline/`** (ported from `tad-template-web`): `discipline:watch`, `discipline:patch`, `discipline:assemble`, `discipline:validate`, `discipline:validate:launch`, `discipline:validate:prod`, `discipline:cross-validate`, `discipline:hydrate`, `discipline:status`, `discipline:step1-prep`, `discipline:ai-scaffold`, `discipline:test-scaffold`, `discipline:codex-batch`, `discipline:progress`, `discipline:log`. Run via `tsx`.
+- **Complete `tools/discipline/`** (ported from `tad-template-web`): `discipline:watch`, `discipline:patch`, `discipline:assemble`, `discipline:validate`, `discipline:validate:launch`, `discipline:validate:prod`, `discipline:cross-validate`, `discipline:hydrate`, `discipline:status`, `discipline:step1-prep`, `discipline:ai-scaffold`, `discipline:test-scaffold`, `discipline:progress`, `discipline:log`. Run via `tsx`.
 - **Placeholder icons 16/48/128 PNG** in `public/icon/` (blue circle on gray). Replace before the first upload to CWS/AMO.
 
 ## Getting Started
