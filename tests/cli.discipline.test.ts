@@ -29,7 +29,10 @@ describe('discipline CLI (deterministic layer + LLM seam)', () => {
     const r = runCli([])
     expect(r.status, out(r)).toBe(0)
     expect(out(r)).toMatch(/Deterministic layer/)
-    expect(out(r)).toMatch(/NOT IMPLEMENTED YET/)
+    // Phase 2: the LLM layer is implemented for run and cross-validate.
+    expect(out(r)).toMatch(/LLM layer/)
+    expect(out(r)).toMatch(/run --with-llm/)
+    expect(out(r)).toMatch(/cross-validate --with-llm/)
   })
 
   it('unknown command fails clearly (exit != 0)', () => {
@@ -38,10 +41,12 @@ describe('discipline CLI (deterministic layer + LLM seam)', () => {
     expect(out(r)).toMatch(/unknown command/)
   })
 
-  it('--with-llm is not implemented yet: exit 2 with a clear message', () => {
+  it('--with-llm on an unsupported command exits 2 and names the two that support it', () => {
     const r = runCli(['step1', '--with-llm'])
     expect(r.status, out(r)).toBe(2)
-    expect(out(r)).toMatch(/not implemented/i)
+    expect(out(r)).toMatch(/does not support the LLM layer/i)
+    expect(out(r)).toMatch(/discipline run --with-llm/)
+    expect(out(r)).toMatch(/discipline cross-validate --with-llm/)
   })
 
   it('real dispatch runs an existing script and propagates exit 0', () => {

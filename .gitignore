@@ -3,6 +3,14 @@ node_modules/
 .wxt/
 dist/
 coverage/
+
+# Substrate runtime state — machine-local, not project artifacts (see AGENTS.md "Substrate")
+.discipline/locks/
+.discipline/ledger/
+.discipline/review/
+.discipline/STOP
+.discipline/gate-report.json
+
 .env
 .env.*
 !.env.example
