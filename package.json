@@ -35,7 +35,7 @@
     "db:types:generate": "node tools/generate_db_types.js",
     "audit:high": "node tools/check_audit.js",
     "gate": "npm run lint && npm run compile && npm run test && npm run check-tokens && npm run check-secrets && npm run check-https && npm run build && npm run build:firefox && npm run check-manifest",
-    "gate:full": "npm run gate && npm run zip && npm run check-magic && npm run check-queries && npm run check-bundle-extension",
+    "gate:full": "npm run gate && npm run zip && npm run check-magic && npm run check-queries && npm run check-bundle-extension && npm run ai:eval",
     "gate:strict": "npm run gate && npm run check-magic:strict && npm run check-queries:strict && npm run check-db-types:strict && npm run check-extension-release",
     "gate:launch": "npm run gate:strict && npm run discipline:validate:launch && npm run audit:high",
     "discipline:hydrate": "tsx tools/discipline/hydrate-template.ts",
@@ -69,7 +69,9 @@
     "e2e": "playwright test",
     "e2e:ui": "playwright test --ui",
     "e2e:install": "playwright install chromium",
-    "gate:visual": "npm run build && npm run e2e"
+    "gate:visual": "npm run build && npm run e2e",
+    "ai:smoke": "node tools/llm_smoke_test.js",
+    "ai:eval": "node tools/llm_eval.js --mode=fixture"
   },
   "dependencies": {
     "react": "^19.0.0",
@@ -86,6 +88,8 @@
     "@vitejs/plugin-react": "^4.3.0",
     "@wxt-dev/module-react": "^1.1.0",
     "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "dotenv": "^17.4.2",
     "eslint": "^9.0.0",
     "eslint-plugin-jsx-a11y": "^6.10.0",
     "js-yaml": "^4.1.0",
