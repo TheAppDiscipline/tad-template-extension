@@ -23,6 +23,9 @@
 - PUSH_PLUGIN: false
 - AI_FEATURES: none
 - LANE: EXTENSION
+- STEP4_EXPANSION_MODE: batch
+- READY_PROMOTION: per_packet
+- DOCTRINE_VERSION: 1.0
 
 ## Env Configuration
 - Extension runtime config lives in `browser.storage.sync` or build-time env only when needed.
