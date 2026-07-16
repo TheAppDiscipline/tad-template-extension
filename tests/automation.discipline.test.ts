@@ -94,6 +94,40 @@ function runTsxEval(dir: string, moduleRelPath: string, scriptBody: string) {
   return { result, out: match ? JSON.parse(match[1]!) : null }
 }
 
+describe('Step 5 paste-ready assembly', () => {
+  it('includes only the context packets declared by the slice', () => {
+    const projectRoot = createDisciplineProject({
+      'STEP_5_SLICE_PACKET.md': '# STEP_5_SLICE_PACKET\n\nCONTEXT_PACKETS: none\n',
+      'UI_HANDOFF_PACKET.md': '# UI_HANDOFF_PACKET\n\nUI_ONLY_CONTENT\n',
+      'AI_IMPLEMENTATION_PACKET.md': '# AI_IMPLEMENTATION_PACKET\n\nAI_ONLY_CONTENT\n',
+    })
+    fs.copyFileSync(
+      path.join(repoRoot, '.discipline', 'prompts', 'step-5-prompt.md'),
+      path.join(projectRoot, '.discipline', 'prompts', 'step-5-prompt.md'),
+    )
+
+    let result = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--project-dir', projectRoot])
+    expect(result.status, getOutput(result)).toBe(0)
+    let output = fs.readFileSync(path.join(projectRoot, '.discipline', 'paste-ready', 'step-5-input.md'), 'utf8')
+    expect(output).toContain('Implementa únicamente el slice')
+    expect(output).not.toMatch(/UI_ONLY_CONTENT|AI_ONLY_CONTENT/)
+
+    fs.writeFileSync(path.join(projectRoot, '.discipline', 'packets', 'STEP_5_SLICE_PACKET.md'), '# STEP_5_SLICE_PACKET\n\nCONTEXT_PACKETS: UI_HANDOFF_PACKET\n', 'utf8')
+    result = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--project-dir', projectRoot])
+    expect(result.status, getOutput(result)).toBe(0)
+    output = fs.readFileSync(path.join(projectRoot, '.discipline', 'paste-ready', 'step-5-input.md'), 'utf8')
+    expect(output).toContain('UI_ONLY_CONTENT')
+    expect(output).not.toContain('AI_ONLY_CONTENT')
+
+    fs.writeFileSync(path.join(projectRoot, '.discipline', 'packets', 'STEP_5_SLICE_PACKET.md'), '# STEP_5_SLICE_PACKET\n\nCONTEXT_PACKETS: UI_HANDOFF_PACKET, AI_IMPLEMENTATION_PACKET\n', 'utf8')
+    result = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--project-dir', projectRoot])
+    expect(result.status, getOutput(result)).toBe(0)
+    output = fs.readFileSync(path.join(projectRoot, '.discipline', 'paste-ready', 'step-5-input.md'), 'utf8')
+    expect(output).toContain('UI_ONLY_CONTENT')
+    expect(output).toContain('AI_ONLY_CONTENT')
+  })
+})
+
 // --- Phase-0 substrate: locks, ledger, gate report, diff review, packet meta ---
 
 describe('Phase-0 substrate: locks, ledger, gate report, diff review, packet meta', () => {
