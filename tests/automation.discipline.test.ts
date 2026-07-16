@@ -312,6 +312,17 @@ describe('Phase-0 substrate: locks, ledger, gate report, diff review, packet met
     expect(fs.existsSync(path.join(dir, '.discipline', 'locks', 'slice-s1.lock')), 'release must remove the lock').toBe(false)
   })
 
+  it('discipline validate warns when a ready Step 5 packet lacks implementation planning sections', () => {
+    const projectRoot = createDisciplineProject({
+      'STEP_5_SLICE_PACKET.md': '# STEP_5_SLICE_PACKET\n\nSTATUS: ready\n\n## Goal\n- x\n\n## Scope\n- x\n\n## Contracts\n- x\n\n## Acceptance criteria\n- x\n',
+    })
+    const result = runTsx('tools/discipline/validate-discipline.ts', ['--project-dir', projectRoot])
+
+    expect(result.status, getOutput(result)).toBe(0)
+    expect(getOutput(result)).toMatch(/STEP_5_SLICE_PACKET ready packet advisory: missing Files to touch/)
+    expect(getOutput(result)).toMatch(/STEP_5_SLICE_PACKET ready packet advisory: missing Manual Verification/)
+  })
+
   it('discipline validate: invalid packet frontmatter is a warning, never changes the exit code', () => {
     const projectRoot = createDisciplineProject({
       'STEP_2_ARCHITECTURE_PACKET.md':
@@ -899,6 +910,21 @@ describe('Phase-2 adapters + run reconciler', () => {
     const res = runTsx('tools/discipline/run.ts', ['--slice', '1', '--project-dir', repo])
     expect(res.status, getOutput(res)).toBe(2)
     expect(getOutput(res)).toMatch(/not clean|allow-dirty/i)
+    fs.rmSync(repo, { recursive: true, force: true })
+  })
+
+  it('run: refuses malformed explicit status markers instead of treating them as ready', () => {
+    const gitProbe = spawnSync('git', ['--version'], { encoding: 'utf8' })
+    if (gitProbe.status !== 0) return
+    const repo = makeRunFixtureRepo()
+    const taskPlanPath = path.join(repo, 'task_plan.md')
+    const taskPlan = fs.readFileSync(taskPlanPath, 'utf8')
+    fs.writeFileSync(taskPlanPath, taskPlan.replace('## Slice 1 - Feature', '## Slice 1 - Feature [blocked: Slice 0]'), 'utf8')
+
+    const result = runTsx('tools/discipline/run.ts', ['--slice', '1', '--dry-run', '--allow-dirty', '--project-dir', repo])
+
+    expect(result.status, getOutput(result)).toBe(2)
+    expect(getOutput(result)).toMatch(/invalid marker: blocked: Slice 0/)
     fs.rmSync(repo, { recursive: true, force: true })
   })
 
