@@ -71,18 +71,25 @@ export function decide({ provider, strict, cliAvailable, committedExists, commit
   return { code: 0, level: 'ok', message: `[OK] ${TYPES_REL} matches the Supabase schema.` }
 }
 
-function isCliAvailable() {
-  try {
-    execSync('supabase --version', { stdio: 'ignore' })
-    return true
-  } catch {
-    return false
+// FINDING-02: resolve a runnable Supabase CLI invocation prefix WITHOUT auto-downloading.
+// Try a global/PATH install first (this also covers node_modules/.bin under `npm run`); fall
+// back to `npx --no-install`, which finds a local devDep even when this script runs via
+// `node tools/...` directly. Never plain `npx` (that would auto-download the CLI binary).
+export function resolveSupabasePrefix() {
+  for (const prefix of ['supabase', 'npx --no-install supabase']) {
+    try {
+      execSync(`${prefix} --version`, { stdio: 'ignore' })
+      return prefix
+    } catch {
+      /* try the next resolution strategy */
+    }
   }
+  return null
 }
 
-function generateTypes() {
+function generateTypes(prefix) {
   // Read-only: returns the generated types as a string; does NOT write the file.
-  return execSync('supabase gen types typescript --local', { encoding: 'utf8' })
+  return execSync(`${prefix} gen types typescript --local`, { encoding: 'utf8' })
 }
 
 function main() {
@@ -95,10 +102,11 @@ function main() {
   let cliAvailable = false
   let generated = null
   if (provider === 'SUPABASE') {
-    cliAvailable = isCliAvailable()
+    const prefix = resolveSupabasePrefix()
+    cliAvailable = prefix !== null
     if (cliAvailable && committedExists) {
       try {
-        generated = generateTypes()
+        generated = generateTypes(prefix)
       } catch {
         cliAvailable = false // CLI present but local DB unreachable -> treat as unavailable
       }

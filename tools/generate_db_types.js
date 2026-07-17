@@ -11,7 +11,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execSync } from 'node:child_process'
-import { detectProvider, TYPES_REL } from './check_db_types.js'
+import { detectProvider, TYPES_REL, resolveSupabasePrefix } from './check_db_types.js'
 
 const root = process.cwd()
 
@@ -23,16 +23,17 @@ if (provider !== 'SUPABASE') {
   process.exit(1)
 }
 
-try {
-  execSync('supabase --version', { stdio: 'ignore' })
-} catch {
-  console.error('db:types:generate: Supabase CLI not found. Install it and run `supabase start` first.')
+// FINDING-02: resolve the Supabase CLI without auto-downloading (global/PATH first, then a
+// local devDep via `npx --no-install`). See resolveSupabasePrefix in check_db_types.js.
+const prefix = resolveSupabasePrefix()
+if (!prefix) {
+  console.error('db:types:generate: Supabase CLI not found. Install it globally or as a devDep (`npm i -D supabase`), then run `supabase start` first.')
   process.exit(1)
 }
 
 let out
 try {
-  out = execSync('supabase gen types typescript --local', { encoding: 'utf8' })
+  out = execSync(`${prefix} gen types typescript --local`, { encoding: 'utf8' })
 } catch {
   console.error(
     'db:types:generate: `supabase gen types typescript --local` failed. Is the local DB running (`supabase start`)?',

@@ -1,13 +1,13 @@
 name: Gate Launch
 
-# Runs the launch gate (gate:strict + scorecard + RLS cross-user + prod audit).
+# Runs the launch gate (gate:strict + scorecard + prod audit).
 # It only enforces once you prepare a launch scorecard (.discipline/scorecard.yaml),
 # so the template repo stays green until you reach PROFILE=LAUNCH.
 #
-# The cross-user RLS test (test:rls) runs against a real Supabase project when these
-# repository secrets are set: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY.
-# Without them it skips cleanly. The LLM security review lives in security-review.yml
-# (opt-in: set the ANTHROPIC_API_KEY secret to enable it).
+# This extension lane has no backend of its own (sidecar pattern), so there is no
+# cross-user RLS test here; that test lives in the web/mobile/desktop lanes (and in
+# your sidecar web app, if you add one). The LLM security review lives in
+# security-review.yml (opt-in: set the ANTHROPIC_API_KEY secret to enable it).
 
 on:
   push:
@@ -41,11 +41,6 @@ jobs:
           fi
 
       - name: Launch gate (enforced only when a scorecard.yaml exists)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          TEST_PRIVATE_BUCKET: ${{ secrets.TEST_PRIVATE_BUCKET }}
         run: |
           if [ -f .discipline/scorecard.yaml ]; then
             echo "scorecard.yaml found — running gate:launch."
