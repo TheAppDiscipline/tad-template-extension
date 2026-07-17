@@ -2,7 +2,7 @@
 
 Discipline Loop Browser Extension template. **Chromium + Firefox** cross-browser via **WXT + React + TypeScript** under Manifest V3.
 
-**Part of The App Discipline.** This is the public, MIT-licensed template (see `LICENSE`). The complete Discipline Loop methodology and vault (full system, playbooks, prompts, and extended materials) are a separate product, sold separately at https://theappdiscipline.gumroad.com/l/tad, and are **not** included in this repository.
+**Part of The App Discipline.** This is the public, MIT-licensed template (see `LICENSE`). The complete Discipline Loop methodology and vault (full system, playbooks, prompts, and extended materials) are a separate product, sold separately at <https://theappdiscipline.gumroad.com/l/tad>, and are **not** included in this repository.
 
 **Template release:** v1.0.0. When you create a real extension from this template, keep strict semver in `package.json`; the Chrome Web Store and Firefox AMO require uploading a higher version than the previous one on each upload.
 

@@ -18,7 +18,7 @@
 ## 4) Ready Slices
 
 ## Slice 0 - Extension Bootstrap Verification
-#### Goal
+### Goal
 Verify the WXT extension template, manifest, messaging and gate.
 #### Scope IN
 - Run `npm install`.
