@@ -19,7 +19,7 @@
   - Frontend: Browser Extension (WXT + React + TypeScript)
   - Runtime: Manifest V3, Chromium + Firefox
   - Backend: Local storage by default; sidecar web app if auth/pagos/sync are needed
-- SYNC_MODE: FAST_UI
+- SYNC_MODE: NONE
 - PUSH_PLUGIN: false
 - AI_FEATURES: none
 - LANE: EXTENSION
