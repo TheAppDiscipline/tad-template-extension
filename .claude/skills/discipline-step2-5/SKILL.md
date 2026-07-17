@@ -119,6 +119,21 @@ Paste your schema:
 
 Generate `prompts/<feature-name>/schema.json` with the full wrapper. Validate with AJV (already in deps).
 
+> **Gotcha — providers need a second, minimal schema.** Models with native
+> structured output (Gemini `responseSchema`, OpenAI `json_schema`, Grok,
+> Mistral) consume a restricted OpenAPI subset, not full JSON Schema. Gemini
+> rejects `additionalProperties`, type-arrays (`["string","null"]` → use
+> `nullable`), `$defs`/`$ref`/`allOf`, and
+> `minimum`/`maximum`/`minItems`/`maxItems` (the last group fails with a generic
+> "An internal error has occurred", hard to diagnose). So produce **two** files:
+> the canonical `prompts/<feature-name>/schema.json` above (validated by AJV in
+> `tools/llm_eval.js`, which imports `Ajv2020` from `ajv/dist/2020.js`) and a
+> minimal provider copy (e.g. `prompts/<feature-name>/schema.aistudio.json`) that
+> you paste as `responseSchema`. AJV still enforces the numeric/size constraints
+> against the canonical schema after the response. In AI Studio, paste JSON via
+> the "Structured outputs" **Code Editor** tab. Full list + grounding/billing
+> caveats: `tools/LLM_TOOLS_README.md` §8.
+
 ### Phase 3: Prompt iteration in AI Studio
 
 This phase is manual. The skill generates the base prompt + an invitation to iterate:
@@ -182,12 +197,16 @@ Save to `evals/<feature-name>.jsonl`. Validate the format with AJV.
 
 ### Phase 5: LLM Contract Gate
 
-This extension template does not currently include `llm_smoke_test.js` or
-`llm_eval.js`. Before closing the step, add or invoke equivalent tooling that
-calls the configured production provider and model, validates the response
-schema, and records the command, provider, model, and results in the packet.
-Do not claim a live-provider validation by running nonexistent `ai:smoke` or
-`ai:eval` scripts.
+With the final provider credentials, `LLM_PROVIDER`, and `LLM_MODEL` configured,
+run the smoke test and live evals against the real provider:
+
+```bash
+npm run ai:smoke
+node tools/llm_eval.js --mode=live --feature=<feature-name>
+```
+
+`npm run ai:eval` alone runs fixture mode; it is useful for deterministic
+regression coverage but does not validate provider behavior.
 
 Capture the result. If pass rate < 90%, do not close the step:
 
@@ -239,8 +258,8 @@ GENERATED: <date>
 - Pass rate: <%>
 
 ### LLM Contract Gate
-- Smoke: <real-provider smoke command>
-- Live eval: <real-provider eval command>
+- Smoke: npm run ai:smoke
+- Live eval: node tools/llm_eval.js --mode=live --feature=<feature>
 - Status: PASS
 
 ### Budgets
