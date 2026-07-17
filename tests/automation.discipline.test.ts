@@ -109,7 +109,7 @@ describe('Step 5 paste-ready assembly', () => {
     let result = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--project-dir', projectRoot])
     expect(result.status, getOutput(result)).toBe(0)
     let output = fs.readFileSync(path.join(projectRoot, '.discipline', 'paste-ready', 'step-5-input.md'), 'utf8')
-    expect(output).toContain('Implementa únicamente el slice')
+    expect(output).toContain('Implement only the slice')
     expect(output).not.toMatch(/UI_ONLY_CONTENT|AI_ONLY_CONTENT/)
 
     fs.writeFileSync(path.join(projectRoot, '.discipline', 'packets', 'STEP_5_SLICE_PACKET.md'), '# STEP_5_SLICE_PACKET\n\nCONTEXT_PACKETS: UI_HANDOFF_PACKET\n', 'utf8')

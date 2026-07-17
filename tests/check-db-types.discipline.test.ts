@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 // @ts-expect-error - check_db_types.js is a plain Node ESM tool (no .d.ts); we test its pure exports.
-import { decide, parseBackendProvider } from '../tools/check_db_types.js'
+import { decide, detectProvider } from '../tools/check_db_types.js'
 
 // Extension runs with vitest; this file reimplements the same cases that
 // tooling.discipline.test.js validates in the other lanes for check-db-types.
 // check_db_types.js is byte-identical across the 4 templates; decide() is read-only and pure.
 
-describe('check-db-types (7.3-B): pure decision + provider parser', () => {
+describe('check-db-types (7.3-B): pure decision + generated provider contract', () => {
   it('no-Supabase -> skip exit 0', () => {
     const r = decide({ provider: 'FIREBASE', strict: false, cliAvailable: false, committedExists: false })
     expect(r.code).toBe(0)
@@ -57,11 +60,13 @@ describe('check-db-types (7.3-B): pure decision + provider parser', () => {
     expect(r.level).toBe('ok')
   })
 
-  it('parseBackendProvider ignores empty values and VITE_BACKEND_PROVIDER', () => {
-    expect(parseBackendProvider('- BACKEND_PROVIDER:\n- LANE: WEB')).toBe(null)
-    expect(parseBackendProvider('- BACKEND_PROVIDER: SUPABASE')).toBe('SUPABASE')
-    expect(parseBackendProvider('- VITE_BACKEND_PROVIDER: Provider selection.')).toBe(null)
-    expect(parseBackendProvider('- backend_provider = supabase')).toBe('SUPABASE')
-    expect(parseBackendProvider('- BACKEND_PROVIDER: local-mock')).toBe('LOCAL-MOCK')
+  it('reads the generated provider contract rather than environment fallbacks', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'discipline-provider-'))
+    fs.mkdirSync(path.join(projectRoot, 'src', 'config'), { recursive: true })
+    fs.writeFileSync(path.join(projectRoot, 'src', 'config', 'provider.generated.json'), JSON.stringify({
+      schema: 'discipline.provider-config/v1', backendProvider: 'SUPABASE', authMode: 'MAGIC_LINK',
+    }), 'utf8')
+    expect(detectProvider(projectRoot)).toBe('SUPABASE')
+    fs.rmSync(projectRoot, { recursive: true, force: true })
   })
 })

@@ -30,6 +30,7 @@
 ## Env Configuration
 - Extension runtime config lives in `browser.storage.sync` or build-time env only when needed.
 - Sidecar web app config belongs in the sidecar repo, not in the extension bundle.
+- The provider contract is materialized by `npm run discipline:provider:generate`; the extension template itself remains LOCAL_ONLY.
 
 ## 1) Non-Negotiables
 - (inherited from Discipline Loop)
