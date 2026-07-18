@@ -1087,3 +1087,122 @@ describe('Phase-2 adapters + run reconciler', () => {
     fs.rmSync(repo, { recursive: true, force: true })
   })
 })
+
+// Mirrors the discipline:progress regression suite in tad-template-web
+// tests/tooling.discipline.test.js (update-progress.ts is byte-identical across the 4 lanes).
+describe('discipline:progress (update-progress.ts)', () => {
+  // A SLICE_COMPLETION_PACKET written exactly as the discipline-step5-slice skill teaches:
+  // "### Outcome" heading sections, not inline "OUTCOME:" fields. The engine must read the real
+  // values instead of defaulting to shipped/yes.
+  const CANONICAL_COMPLETION_PACKET = [
+    '## SLICE_COMPLETION_PACKET',
+    '',
+    '### Slice',
+    '- Slice 3 - item list with pull-to-refresh',
+    '',
+    '### Outcome',
+    '- blocked',
+    '',
+    '### Scope delivered',
+    '- Implemented the item list with pull-to-refresh and an',
+    '  empty state that renders when the query returns zero rows',
+    '- Added optimistic delete',
+    '',
+    '### Gates passed',
+    '- npm run gate: FAILED (2 typecheck errors remain)',
+    '',
+    '### Open issues',
+    '- Pull-to-refresh fires twice on slow networks; suspect a',
+    '  duplicated listener in the effect cleanup',
+    '',
+    '### Next recommendation',
+    '- Fix the double-fire before starting Slice 4; do not ship this slice',
+    '',
+    '### Deploy signal',
+    '- not_ready',
+    '',
+  ].join('\n')
+
+  function runProgress(projectRoot: string) {
+    return runTsx('tools/discipline/update-progress.ts', ['--project-dir', projectRoot])
+  }
+
+  it('records the real outcome and gate result (no false green)', () => {
+    const projectRoot = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET })
+    const result = runProgress(projectRoot)
+    expect(result.status, getOutput(result)).toBe(0)
+    const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
+
+    expect(progress).toMatch(/- \*\*Status:\*\* blocked/)
+    expect(progress).not.toMatch(/Status:\*\* shipped/)
+    expect(progress).toMatch(/- \*\*Gates:\*\* no \(/)
+    expect(progress).toMatch(/FAILED \(2 typecheck/)
+    expect(progress).not.toMatch(/Gates:\*\* yes/)
+  })
+
+  it('keeps the descriptive slice name and the full scope', () => {
+    const projectRoot = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET })
+    expect(runProgress(projectRoot).status).toBe(0)
+    const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
+
+    expect(progress).toMatch(/Slice 3 - item list with pull-to-refresh/)
+    expect(progress).toMatch(/Implemented the item list with pull-to-refresh and an empty state/)
+    expect(progress).toMatch(/Added optimistic delete/)
+  })
+
+  it('surfaces open issues under Open Errors and points Blockers there', () => {
+    const projectRoot = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET })
+    expect(runProgress(projectRoot).status).toBe(0)
+    const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
+
+    expect(progress).toMatch(/- Blockers: see Open Errors/)
+    expect(progress).toMatch(/## Open Errors\r?\n- Pull-to-refresh fires twice on slow networks/)
+    expect(progress).not.toMatch(/## Open Errors\r?\n- \(none\)/)
+  })
+
+  it('preserves the blank line before the next heading', () => {
+    const projectRoot = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET })
+    expect(runProgress(projectRoot).status).toBe(0)
+    const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
+
+    expect(progress).toMatch(/3\) \(empty\)\r?\n\r?\n## Open Errors/)
+    expect(progress).not.toMatch(/\(empty\)\r?\n## Open Errors/)
+  })
+
+  it('detects the next ready slice from task_plan.md', () => {
+    const projectRoot = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET })
+    fs.writeFileSync(
+      path.join(projectRoot, 'task_plan.md'),
+      '# task_plan.md\n\n## Slice 3 - item list\n- status: in-progress\n\n## Slice 4 - offline cache\n- status: ready\n',
+      'utf8',
+    )
+    expect(runProgress(projectRoot).status).toBe(0)
+    const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
+    expect(progress).toMatch(/- Working on: Slice 4 - offline cache/)
+  })
+
+  it('is idempotent across repeated runs of the same packet', () => {
+    const projectRoot = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET })
+    expect(runProgress(projectRoot).status).toBe(0)
+    expect(runProgress(projectRoot).status).toBe(0)
+    expect(runProgress(projectRoot).status).toBe(0)
+    const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
+
+    const logBlocks = (progress.match(/^### \d{4}-\d{2}-\d{2} /gm) || []).length
+    expect(logBlocks, 'no duplicate log block after repeated runs').toBe(1)
+    const lastCompleted = (progress.match(/^\d+\) Slice 3 - item list/gm) || []).length
+    expect(lastCompleted, 'no duplicate Last Completed entry after repeated runs').toBe(1)
+  })
+
+  it('preserves CRLF line endings without mixing in bare LF', () => {
+    const projectRoot = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET.replace(/\n/g, '\r\n') })
+    const progressPath = path.join(projectRoot, 'progress.md')
+    fs.writeFileSync(progressPath, fs.readFileSync(progressPath, 'utf8').replace(/\r?\n/g, '\r\n'), 'utf8')
+
+    expect(runProgress(projectRoot).status).toBe(0)
+    const raw = fs.readFileSync(progressPath, 'utf8')
+    const lines = raw.split('\n').slice(0, -1)
+    const bareLf = lines.filter((l) => !l.endsWith('\r')).length
+    expect(bareLf, 'a CRLF file must not gain bare-LF lines from injected content').toBe(0)
+  })
+})
