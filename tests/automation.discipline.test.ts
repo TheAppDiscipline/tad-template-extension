@@ -1205,4 +1205,46 @@ describe('discipline:progress (update-progress.ts)', () => {
     const bareLf = lines.filter((l) => !l.endsWith('\r')).length
     expect(bareLf, 'a CRLF file must not gain bare-LF lines from injected content').toBe(0)
   })
+
+  it('refuses a packet with no outcome (fail-closed, no false green)', () => {
+    const projectRoot = createDisciplineProject({
+      'SLICE_COMPLETION_PACKET.md': [
+        '## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 3 - thing', '',
+        '### Scope delivered', '- did the thing', '', '### Gates passed', '- npm run gate', '',
+      ].join('\n'),
+    })
+    const before = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
+    const result = runProgress(projectRoot)
+    expect(result.status, 'CLI must exit non-zero on an incomplete packet').not.toBe(0)
+    expect(getOutput(result)).toMatch(/Refusing to record a slice with an unknown outcome/)
+    expect(fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')).toBe(before)
+  })
+
+  it('never logs an un-run or unknown gate as passed', () => {
+    const projectRoot = createDisciplineProject({
+      'SLICE_COMPLETION_PACKET.md': [
+        '## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 3 - thing', '',
+        '### Outcome', '- done', '', '### Scope delivered', '- did it', '',
+        '### Gates passed', '- npm run gate: NOT RUN', '',
+      ].join('\n'),
+    })
+    expect(runProgress(projectRoot).status).toBe(0)
+    const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
+    expect(progress).not.toMatch(/Gates:\*\* yes/)
+    expect(progress).toMatch(/- \*\*Gates:\*\* no \(/)
+    expect(progress).toMatch(/NOT RUN/)
+  })
+
+  it('is idempotent across days (stable packet fingerprint, not the date)', () => {
+    const projectRoot = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET })
+    const progressPath = path.join(projectRoot, 'progress.md')
+    expect(runProgress(projectRoot).status).toBe(0)
+    fs.writeFileSync(progressPath, fs.readFileSync(progressPath, 'utf8').replace(/\d{4}-\d{2}-\d{2}/g, '2020-01-01'), 'utf8')
+    expect(runProgress(projectRoot).status).toBe(0)
+    const progress = fs.readFileSync(progressPath, 'utf8')
+    const logBlocks = (progress.match(/^### \d{4}-\d{2}-\d{2} /gm) || []).length
+    expect(logBlocks, 'reprocessing on a later day must not add a second log block').toBe(1)
+    const lastCompleted = (progress.match(/^\d+\) Slice 3 - item list/gm) || []).length
+    expect(lastCompleted, 'reprocessing on a later day must not duplicate Last Completed').toBe(1)
+  })
 })
