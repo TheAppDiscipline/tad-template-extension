@@ -1247,4 +1247,57 @@ describe('discipline:progress (update-progress.ts)', () => {
     const lastCompleted = (progress.match(/^\d+\) Slice 3 - item list/gm) || []).length
     expect(lastCompleted, 'reprocessing on a later day must not duplicate Last Completed').toBe(1)
   })
+
+  it('logs a green only for an explicit gate pass (allowlist, not blocklist)', () => {
+    const gatesOf = (gateLine: string): string => {
+      const root = createDisciplineProject({
+        'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 3 - x', '',
+          '### Outcome', '- done', '', '### Gates passed', gateLine, ''].join('\n'),
+      })
+      expect(runProgress(root).status).toBe(0)
+      return fs.readFileSync(path.join(root, 'progress.md'), 'utf8').match(/- \*\*Gates:\*\* (.+)/)?.[1] ?? ''
+    }
+    expect(gatesOf('- deferred until CI credentials are available')).toMatch(/^no /)
+    expect(gatesOf('- npm run gate')).toMatch(/^unverified /)
+    expect(gatesOf('- npm run gate: PASS')).toBe('yes')
+    expect(gatesOf('- npm run gate: FAILED')).toMatch(/^no /)
+  })
+
+  it('picks up an open issue added to an already-logged packet', () => {
+    const projectRoot = createDisciplineProject({
+      'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 3 - x', '',
+        '### Outcome', '- blocked', '', '### Gates passed', '- npm run gate: FAILED', '', '### Open issues', '- none', ''].join('\n'),
+    })
+    const packetPath = path.join(projectRoot, '.discipline', 'packets', 'SLICE_COMPLETION_PACKET.md')
+    expect(runProgress(projectRoot).status).toBe(0)
+    fs.writeFileSync(packetPath, ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 3 - x', '',
+      '### Outcome', '- blocked', '', '### Gates passed', '- npm run gate: FAILED', '', '### Open issues',
+      '- Auth token refresh races on slow networks', ''].join('\n'), 'utf8')
+    expect(runProgress(projectRoot).status).toBe(0)
+    const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
+    expect(progress).toMatch(/## Open Errors\r?\n- Auth token refresh races on slow networks/)
+    expect(progress).toMatch(/- Blockers: see Open Errors/)
+    expect((progress.match(/^### \d{4}-\d{2}-\d{2} /gm) || []).length).toBe(1)
+  })
+
+  it('does not assemble the next handoff when the completion packet is refused', () => {
+    const projectRoot = createDisciplineProject({
+      'SLICE_COMPLETION_PACKET.md': '## SLICE_COMPLETION_PACKET\n\n### Slice\n- Slice 1\n\n### Scope delivered\n- did stuff\n',
+    })
+    const packetPath = path.join(projectRoot, '.discipline', 'packets', 'SLICE_COMPLETION_PACKET.md')
+    const tester = path.join(projectRoot, 'handle-refuse-tester.mjs')
+    const watchUrl = pathToImport(path.join(repoRoot, 'tools', 'discipline', 'watch.ts'))
+    fs.writeFileSync(tester, [
+      `import { handlePacket } from '${watchUrl}'`,
+      `await handlePacket(${JSON.stringify(projectRoot)}, ${JSON.stringify(packetPath)})`,
+      `console.log('done')`,
+    ].join('\n'), 'utf8')
+    const result = spawnSync(process.execPath, [tsxCli, tester], { cwd: repoRoot, env: process.env, encoding: 'utf8', timeout: 30000 })
+    expect(result.status, getOutput(result)).toBe(0)
+    expect(getOutput(result)).toMatch(/Refused progress.md update/)
+    expect(getOutput(result)).toMatch(/not assembling or opening the next handoff/)
+    const pasteReadyDir = path.join(projectRoot, '.discipline', 'paste-ready')
+    const files = fs.existsSync(pasteReadyDir) ? fs.readdirSync(pasteReadyDir) : []
+    expect(files.length, `found: ${files.join(', ')}`).toBe(0)
+  })
 })
