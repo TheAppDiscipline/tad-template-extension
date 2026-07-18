@@ -1328,11 +1328,13 @@ describe('discipline:progress (update-progress.ts)', () => {
     const projectRoot = createDisciplineProject({
       'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 1', '',
         '### Outcome', '- done', '', '### Gates passed', '- npm run gate', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
+      // Reentry also needs the validated execution packet; this isolates the block to the completion gate.
+      'STEP_4_EXECUTION_PACKET.md': '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\nbody\n',
     })
     const result = runHandle(projectRoot)
     expect(result.status, getOutput(result)).toBe(0)
     expect(fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')).toMatch(/- \*\*Gates:\*\* unverified/)
-    expect(getOutput(result)).toMatch(/not green/)
+    expect(getOutput(result)).toMatch(/completion gate is|not ready to advance/)
     const pasteReadyDir = path.join(projectRoot, '.discipline', 'paste-ready')
     const files = fs.existsSync(pasteReadyDir) ? fs.readdirSync(pasteReadyDir) : []
     expect(files.length, `found: ${files.join(', ')}`).toBe(0)
@@ -1342,24 +1344,28 @@ describe('discipline:progress (update-progress.ts)', () => {
     const projectRoot = createDisciplineProject({
       'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 1', '',
         '### Outcome', '- done', '', '### Gates passed', '- GATE_STATE: passed', '- npm run gate: 0 failures', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
+      'STEP_4_EXECUTION_PACKET.md': '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\nbody\n',
     })
     const result = runHandle(projectRoot)
     expect(result.status, getOutput(result)).toBe(0)
     expect(fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')).toMatch(/- \*\*Gates:\*\* yes/)
     expect(getOutput(result)).not.toMatch(/not green/)
+    expect(getOutput(result)).not.toMatch(/not ready to advance/) // green gate + validated execution advances
   })
 
   it('keeps blocking across events while a non-green completion lingers', () => {
     const projectRoot = createDisciplineProject({
       'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 1', '',
         '### Outcome', '- done', '', '### Gates passed', '- npm run gate', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
+      // Validated execution packet present throughout, so the block is the lingering completion gate.
+      'STEP_4_EXECUTION_PACKET.md': '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\nbody\n',
     })
     runHandle(projectRoot, 'SLICE_COMPLETION_PACKET.md') // event 1: blocked
     // event 2: an unrelated packet arrives while the non-green completion still lingers on disk.
-    fs.writeFileSync(path.join(projectRoot, '.discipline', 'packets', 'STEP_4_EXECUTION_PACKET.md'), '## STEP_4_EXECUTION_PACKET\n\nbody\n', 'utf8')
+    fs.writeFileSync(path.join(projectRoot, '.discipline', 'packets', 'STEP_4_EXECUTION_PACKET.md'), '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\nbody\n', 'utf8')
     const result = runHandle(projectRoot, 'STEP_4_EXECUTION_PACKET.md')
     expect(result.status, getOutput(result)).toBe(0)
-    expect(getOutput(result)).toMatch(/not green/)
+    expect(getOutput(result)).toMatch(/completion gate is|not ready to advance/)
     const pasteReadyDir = path.join(projectRoot, '.discipline', 'paste-ready')
     const files = fs.existsSync(pasteReadyDir) ? fs.readdirSync(pasteReadyDir) : []
     expect(files.length, `found: ${files.join(', ')}`).toBe(0)
@@ -1377,5 +1383,140 @@ describe('discipline:progress (update-progress.ts)', () => {
     const pasteReadyDir = path.join(projectRoot, '.discipline', 'paste-ready')
     const files = fs.existsSync(pasteReadyDir) ? fs.readdirSync(pasteReadyDir) : []
     expect(files.length, `found: ${files.join(', ')}`).toBe(0)
+  })
+})
+
+// Step 4 origin resolver (the shared module the watcher and the /discipline-step4 skill both
+// use). Extension carries no detectNext suite of its own, so this also covers the watcher wiring
+// for the new fail-loud behavior. Mirrors the tooling.discipline.test.js additions in the other lanes.
+describe('discipline:step4-origin (fail-loud)', () => {
+  const EXEC_VALIDATED = '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\n### Slices\n- Slice 0 - bootstrap\n'
+  const EXEC_DRAFT = '## STEP_4_EXECUTION_PACKET\n\nSTATUS: draft\n\n### Slices\n- Slice 0 - bootstrap\n'
+  const COMPLETION_PASSED = ['## SLICE_COMPLETION_PACKET', '', 'STATUS: ready', '', '### Slice', '- Slice 1', '', '### Outcome', '- done', '', '### Gates', '- GATE_STATE: passed', ''].join('\n')
+  const COMPLETION_UNVERIFIED = ['## SLICE_COMPLETION_PACKET', '', 'STATUS: ready', '', '### Slice', '- Slice 1', '', '### Outcome', '- done', ''].join('\n')
+  const FEEDBACK_STEP4 = '## POST_DEPLOY_FEEDBACK_PACKET\n\n## Recommended branch\n- Step 4 feedback loop\n'
+  const FEEDBACK_STEP7 = '## POST_DEPLOY_FEEDBACK_PACKET\n\n## Recommended branch\n- Step 7 productization\n'
+  const FEEDBACK_UNCLEAR = '## POST_DEPLOY_FEEDBACK_PACKET\n\n## Notes\n- shipped fine, minor polish later\n'
+  const HARDENING = '## PROD_HARDENING_PACKET\n\n### Backlog\n- Add rate limiting\n'
+
+  type OriginJson = { status?: string; mode?: string; candidates?: string[]; reason?: string }
+  function resolveOrigin(packetMap: Record<string, string>, extraArgs: string[] = []) {
+    const root = createDisciplineProject(packetMap)
+    const res = runTsx('tools/discipline/step4-origin.ts', ['--json', '--project-dir', root, ...extraArgs])
+    let json: OriginJson = {}
+    try { json = JSON.parse(res.stdout) as OriginJson } catch { /* leave {} */ }
+    return { exit: res.status, json, raw: getOutput(res) }
+  }
+
+  it('chooses input for a validated execution packet with no active reentry', () => {
+    const r = resolveOrigin({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED })
+    expect(r.exit, r.raw).toBe(0)
+    expect(r.json.mode).toBe('4')
+  })
+
+  it('rejects a draft execution packet (invalid, not skippable)', () => {
+    const r = resolveOrigin({ 'STEP_4_EXECUTION_PACKET.md': EXEC_DRAFT })
+    expect(r.exit, r.raw).toBe(2)
+    expect(r.json.status).toBe('invalid')
+  })
+
+  it('chooses reentry when the completion gate passed, invalid when it did not', () => {
+    const ok = resolveOrigin({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'SLICE_COMPLETION_PACKET.md': COMPLETION_PASSED })
+    expect(ok.exit, ok.raw).toBe(0)
+    expect(ok.json.mode).toBe('4-reentry')
+    const bad = resolveOrigin({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'SLICE_COMPLETION_PACKET.md': COMPLETION_UNVERIFIED })
+    expect(bad.exit, bad.raw).toBe(2)
+    expect(bad.json.status).toBe('invalid')
+  })
+
+  it('chooses feedback only when it recommends Step 4, and stops otherwise (no silent input fallback)', () => {
+    const four = resolveOrigin({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'POST_DEPLOY_FEEDBACK_PACKET.md': FEEDBACK_STEP4 })
+    expect(four.exit, four.raw).toBe(0)
+    expect(four.json.mode).toBe('4-feedback')
+    // feedback -> Step 7, WITHOUT --mode, is NOT a Step 4 origin: invalid (redirect), not input.
+    const sevenAuto = resolveOrigin({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'POST_DEPLOY_FEEDBACK_PACKET.md': FEEDBACK_STEP7 })
+    expect(sevenAuto.exit, sevenAuto.raw).toBe(2)
+    expect(sevenAuto.json.reason).toMatch(/Step 7/)
+    // and forcing --mode 4-feedback against a Step 7 recommendation is still rejected.
+    const seven = resolveOrigin({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'POST_DEPLOY_FEEDBACK_PACKET.md': FEEDBACK_STEP7 }, ['--mode', '4-feedback'])
+    expect(seven.exit, seven.raw).toBe(2)
+    expect(seven.json.reason).toMatch(/Step 7/)
+    // feedback with no declared branch, WITHOUT --mode, stops (no silent default to Step 7).
+    const unclearAuto = resolveOrigin({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'POST_DEPLOY_FEEDBACK_PACKET.md': FEEDBACK_UNCLEAR })
+    expect(unclearAuto.exit, unclearAuto.raw).toBe(2)
+    expect(unclearAuto.json.reason).toMatch(/clear recommended branch/)
+  })
+
+  it('chooses hardening only with a validated execution packet', () => {
+    const r = resolveOrigin({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'PROD_HARDENING_PACKET.md': HARDENING })
+    expect(r.exit, r.raw).toBe(0)
+    expect(r.json.mode).toBe('4-hardening')
+    // required for every mode: hardening without a validated execution packet -> invalid.
+    const noExec = resolveOrigin({ 'PROD_HARDENING_PACKET.md': HARDENING })
+    expect(noExec.exit, noExec.raw).toBe(2)
+    expect(noExec.json.reason).toMatch(/EXECUTION_PACKET/)
+  })
+
+  it('stops on a reentry collision, and honors an explicit --mode override', () => {
+    const ambiguous = resolveOrigin({ 'PROD_HARDENING_PACKET.md': HARDENING, 'SLICE_COMPLETION_PACKET.md': COMPLETION_PASSED })
+    expect(ambiguous.exit, ambiguous.raw).toBe(3)
+    expect(ambiguous.json.status).toBe('ambiguous')
+    expect([...(ambiguous.json.candidates ?? [])].sort()).toEqual(['4-hardening', '4-reentry'])
+    const overridden = resolveOrigin({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'PROD_HARDENING_PACKET.md': HARDENING, 'SLICE_COMPLETION_PACKET.md': COMPLETION_PASSED }, ['--mode', '4-hardening'])
+    expect(overridden.exit, overridden.raw).toBe(0)
+    expect(overridden.json.mode).toBe('4-hardening')
+  })
+
+  it('validates even under --mode: reentry with no completion, feedback with no branch', () => {
+    const noCompletion = resolveOrigin({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED }, ['--mode', '4-reentry'])
+    expect(noCompletion.exit, noCompletion.raw).toBe(2)
+    expect(noCompletion.json.status).toBe('invalid')
+    const unclear = resolveOrigin({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'POST_DEPLOY_FEEDBACK_PACKET.md': FEEDBACK_UNCLEAR }, ['--mode', '4-feedback'])
+    expect(unclear.exit, unclear.raw).toBe(2)
+    expect(unclear.json.reason).toMatch(/clear recommended branch/)
+  })
+
+  it('routeFromPackets routes reentry handoffs and marks collision / undeclared feedback', () => {
+    const root = createDisciplineProject()
+    const { out } = runTsxEval(root, 'tools/discipline/lib/step4-origin.ts', [
+      `const fs = await import('node:fs'); const path = await import('node:path')`,
+      `const root = ${JSON.stringify(root)}`,
+      `const dir = path.join(root, '.discipline', 'packets')`,
+      `const clear = () => { for (const f of fs.readdirSync(dir)) fs.unlinkSync(path.join(dir, f)) }`,
+      `const write = (n, b = '') => fs.writeFileSync(path.join(dir, n), b, 'utf-8')`,
+      `const route = () => { const r = mod.routeFromPackets(root); return r.kind === 'step4' ? r.mode : r.kind === 'redirect' ? r.step : r.kind }`,
+      `const out = {}`,
+      `clear(); write('PROD_HARDENING_PACKET.md'); write('SLICE_COMPLETION_PACKET.md'); out.collision = route()`,
+      `clear(); write('POST_DEPLOY_FEEDBACK_PACKET.md', '## Notes\\n- no branch'); out.unclear = route()`,
+      `clear(); write('SLICE_COMPLETION_PACKET.md'); out.reentry = route()`,
+      `clear(); write('PROD_HARDENING_PACKET.md'); out.hardening = route()`,
+      `emit(out)`,
+    ].join('\n'))
+    expect(out.collision).toBe('collision')
+    expect(out.unclear).toBe('feedback-unclear')
+    expect(out.reentry).toBe('4-reentry')
+    expect(out.hardening).toBe('4-hardening')
+  })
+
+  it('detectNext authorizes a Step 4 advance only when the origin is coherent', () => {
+    const EXEC_VALIDATED = '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\n### Slices\n- Slice 0\n'
+    const EXEC_DRAFT = '## STEP_4_EXECUTION_PACKET\n\nSTATUS: draft\n\n### Slices\n- Slice 0\n'
+    const COMPLETION_PASSED = ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 1', '', '### Outcome', '- done', '', '### Gates', '- GATE_STATE: passed', ''].join('\n')
+    const COMPLETION_UNVERIFIED = ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 1', '', '### Outcome', '- done', ''].join('\n')
+    const HARDENING = '## PROD_HARDENING_PACKET\n\n### Backlog\n- add rate limiting\n'
+    const detect = (packetMap: Record<string, string>) => {
+      const root = createDisciplineProject(packetMap)
+      const { out } = runTsxEval(root, 'tools/discipline/watch.ts', `emit({ v: mod.detectNext(${JSON.stringify(root)}) })`)
+      return out.v
+    }
+    // input advances only with a validated execution packet; a draft does not authorize advance.
+    expect(detect({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED })).toBe('4')
+    expect(detect({ 'STEP_4_EXECUTION_PACKET.md': EXEC_DRAFT })).toBe(null)
+    // reentry advances only on a green completion gate.
+    expect(detect({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'SLICE_COMPLETION_PACKET.md': COMPLETION_PASSED })).toBe('4-reentry')
+    expect(detect({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'SLICE_COMPLETION_PACKET.md': COMPLETION_UNVERIFIED })).toBe(null)
+    // hardening needs the validated execution packet too (required for every mode).
+    expect(detect({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'PROD_HARDENING_PACKET.md': HARDENING })).toBe('4-hardening')
+    expect(detect({ 'PROD_HARDENING_PACKET.md': HARDENING })).toBe(null)
   })
 })
