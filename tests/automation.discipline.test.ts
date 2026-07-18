@@ -1264,6 +1264,10 @@ describe('discipline:progress (update-progress.ts)', () => {
     expect(gatesOf('- npm run gate: NOT PASSED')).toMatch(/^no /)
     expect(gatesOf("- build isn't green yet")).toMatch(/^no /)
     expect(gatesOf('- gate did not pass')).toMatch(/^no /)
+    expect(gatesOf('- The release gate cannot pass due to unavailable credentials')).toMatch(/^no /)
+    expect(gatesOf('- the suite passes locally but is flaky on CI')).toMatch(/^unverified /)
+    expect(gatesOf('- GATE_STATE: passed')).toBe('yes')
+    expect(gatesOf('- GATE_STATE: failed')).toMatch(/^no /)
   })
 
   it('picks up an open issue added to an already-logged packet', () => {
@@ -1304,8 +1308,8 @@ describe('discipline:progress (update-progress.ts)', () => {
     expect(files.length, `found: ${files.join(', ')}`).toBe(0)
   })
 
-  const runHandle = (projectRoot: string) => {
-    const packetPath = path.join(projectRoot, '.discipline', 'packets', 'SLICE_COMPLETION_PACKET.md')
+  const runHandle = (projectRoot: string, packetFile = 'SLICE_COMPLETION_PACKET.md') => {
+    const packetPath = path.join(projectRoot, '.discipline', 'packets', packetFile)
     const tester = path.join(projectRoot, 'handle-tester.mjs')
     const watchUrl = pathToImport(path.join(repoRoot, 'tools', 'discipline', 'watch.ts'))
     fs.writeFileSync(tester, [
@@ -1324,7 +1328,7 @@ describe('discipline:progress (update-progress.ts)', () => {
     const result = runHandle(projectRoot)
     expect(result.status, getOutput(result)).toBe(0)
     expect(fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')).toMatch(/- \*\*Gates:\*\* unverified/)
-    expect(getOutput(result)).toMatch(/Gate is not green/)
+    expect(getOutput(result)).toMatch(/not green/)
     const pasteReadyDir = path.join(projectRoot, '.discipline', 'paste-ready')
     const files = fs.existsSync(pasteReadyDir) ? fs.readdirSync(pasteReadyDir) : []
     expect(files.length, `found: ${files.join(', ')}`).toBe(0)
@@ -1333,11 +1337,27 @@ describe('discipline:progress (update-progress.ts)', () => {
   it('advances the pipeline only on a green gate', () => {
     const projectRoot = createDisciplineProject({
       'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 1', '',
-        '### Outcome', '- done', '', '### Gates passed', '- npm run gate: PASS', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
+        '### Outcome', '- done', '', '### Gates passed', '- GATE_STATE: passed', '- npm run gate: 0 failures', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
     })
     const result = runHandle(projectRoot)
     expect(result.status, getOutput(result)).toBe(0)
     expect(fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')).toMatch(/- \*\*Gates:\*\* yes/)
-    expect(getOutput(result)).not.toMatch(/Gate is not green/)
+    expect(getOutput(result)).not.toMatch(/not green/)
+  })
+
+  it('keeps blocking across events while a non-green completion lingers', () => {
+    const projectRoot = createDisciplineProject({
+      'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 1', '',
+        '### Outcome', '- done', '', '### Gates passed', '- npm run gate', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
+    })
+    runHandle(projectRoot, 'SLICE_COMPLETION_PACKET.md') // event 1: blocked
+    // event 2: an unrelated packet arrives while the non-green completion still lingers on disk.
+    fs.writeFileSync(path.join(projectRoot, '.discipline', 'packets', 'STEP_4_EXECUTION_PACKET.md'), '## STEP_4_EXECUTION_PACKET\n\nbody\n', 'utf8')
+    const result = runHandle(projectRoot, 'STEP_4_EXECUTION_PACKET.md')
+    expect(result.status, getOutput(result)).toBe(0)
+    expect(getOutput(result)).toMatch(/not green/)
+    const pasteReadyDir = path.join(projectRoot, '.discipline', 'paste-ready')
+    const files = fs.existsSync(pasteReadyDir) ? fs.readdirSync(pasteReadyDir) : []
+    expect(files.length, `found: ${files.join(', ')}`).toBe(0)
   })
 })
