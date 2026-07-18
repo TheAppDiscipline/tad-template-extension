@@ -1249,17 +1249,18 @@ describe('discipline:progress (update-progress.ts)', () => {
   })
 
   it('logs a green only for an explicit gate pass (allowlist, not blocklist)', () => {
-    const gatesOf = (gateLine: string): string => {
+    const gatesOf = (gateLines: string | string[]): string => {
+      const lines = Array.isArray(gateLines) ? gateLines : [gateLines]
       const root = createDisciplineProject({
         'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 3 - x', '',
-          '### Outcome', '- done', '', '### Gates passed', gateLine, ''].join('\n'),
+          '### Outcome', '- done', '', '### Gates passed', ...lines, ''].join('\n'),
       })
       expect(runProgress(root).status).toBe(0)
       return fs.readFileSync(path.join(root, 'progress.md'), 'utf8').match(/- \*\*Gates:\*\* (.+)/)?.[1] ?? ''
     }
     expect(gatesOf('- deferred until CI credentials are available')).toMatch(/^no /)
     expect(gatesOf('- npm run gate')).toMatch(/^unverified /)
-    expect(gatesOf('- npm run gate: PASS')).toBe('yes')
+    expect(gatesOf('- npm run gate: PASS')).toMatch(/^unverified /)
     expect(gatesOf('- npm run gate: FAILED')).toMatch(/^no /)
     expect(gatesOf('- npm run gate: NOT PASSED')).toMatch(/^no /)
     expect(gatesOf("- build isn't green yet")).toMatch(/^no /)
@@ -1268,6 +1269,9 @@ describe('discipline:progress (update-progress.ts)', () => {
     expect(gatesOf('- the suite passes locally but is flaky on CI')).toMatch(/^unverified /)
     expect(gatesOf('- GATE_STATE: passed')).toBe('yes')
     expect(gatesOf('- GATE_STATE: failed')).toMatch(/^no /)
+    expect(gatesOf('- GATE_STATE: passed | failed | unverified')).toMatch(/^unverified /)
+    expect(gatesOf('- GATE_STATE: passed but CI evidence is pending')).toMatch(/^unverified /)
+    expect(gatesOf(['- GATE_STATE: passed', '- GATE_STATE: failed'])).toMatch(/^unverified /)
   })
 
   it('picks up an open issue added to an already-logged packet', () => {
@@ -1356,6 +1360,20 @@ describe('discipline:progress (update-progress.ts)', () => {
     const result = runHandle(projectRoot, 'STEP_4_EXECUTION_PACKET.md')
     expect(result.status, getOutput(result)).toBe(0)
     expect(getOutput(result)).toMatch(/not green/)
+    const pasteReadyDir = path.join(projectRoot, '.discipline', 'paste-ready')
+    const files = fs.existsSync(pasteReadyDir) ? fs.readdirSync(pasteReadyDir) : []
+    expect(files.length, `found: ${files.join(', ')}`).toBe(0)
+  })
+
+  it('blocks a higher-priority handoff while a non-green completion lingers', () => {
+    const projectRoot = createDisciplineProject({
+      'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 1', '',
+        '### Outcome', '- done', '', '### Gates passed', '- GATE_STATE: unverified', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
+      'DEPLOY_READINESS_PACKET.md': '## DEPLOY_READINESS_PACKET\n\nbody\n',
+    })
+    const result = runHandle(projectRoot, 'DEPLOY_READINESS_PACKET.md')
+    expect(result.status, getOutput(result)).toBe(0)
+    expect(getOutput(result)).toMatch(/Completion gate is not green/)
     const pasteReadyDir = path.join(projectRoot, '.discipline', 'paste-ready')
     const files = fs.existsSync(pasteReadyDir) ? fs.readdirSync(pasteReadyDir) : []
     expect(files.length, `found: ${files.join(', ')}`).toBe(0)
