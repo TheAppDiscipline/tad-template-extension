@@ -1195,6 +1195,146 @@ describe('discipline:progress (update-progress.ts)', () => {
     expect(progress).not.toMatch(/## Open Errors\r?\n- \(none\)/)
   })
 
+  // Regression fixture for the 2026-07-22 data-loss incident. PRISTINE_PROGRESS seeds "## Open
+  // Errors" with a single one-line bullet, so no test ever gave the merge a multi-line entry to
+  // destroy: the bug was hidden from the fixture, not from the engine. This baseline is the real
+  // shape a project reaches after a few slices: wrapped continuation lines, nested sub-bullets,
+  // and a Blockers field whose value spans several lines.
+  const WRAPPED_PROGRESS = [
+    '# progress.md',
+    '',
+    '## Current Status',
+    '- Working on: Slice 3',
+    '- Next: pending',
+    '- Blockers: RLS policy review and the migration rollback drill',
+    '  are both pending as of 2026-07-22. Neither blocks the slice',
+    '  itself, only the deploy.',
+    '',
+    '## Last Completed Slices',
+    '1) (empty)',
+    '2) (empty)',
+    '3) (empty)',
+    '',
+    '## Open Errors',
+    '- Auth token refresh races on slow networks.',
+    '  **Evidence:** three 401s in the ledger, all within 200ms of a token boundary.',
+    '  **Hypothesis:** the refresh promise is not shared between callers.',
+    '- Migration 0007 leaves an orphaned index on staging.',
+    '  - only reproduces when the table is non-empty',
+    '  - `drop index if exists` is missing from the down step',
+    '',
+    '## Next Actions',
+    '- x',
+    '',
+    '## Deploy Notes',
+    '- x',
+    '',
+  ].join('\n')
+
+  function seedProgress(projectRoot: string, content: string): string {
+    fs.writeFileSync(path.join(projectRoot, 'progress.md'), content, 'utf8')
+    return projectRoot
+  }
+
+  it('appends to Open Errors without destroying existing entries', () => {
+    const projectRoot = seedProgress(
+      createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET }),
+      WRAPPED_PROGRESS,
+    )
+    expect(runProgress(projectRoot).status).toBe(0)
+    const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8').replace(/\r\n/g, '\n')
+
+    // Every wrapped continuation line survives VERBATIM, indentation included. The old engine kept
+    // only the bullet's first line and rewrote the section from it.
+    expect(progress).toMatch(/- Auth token refresh races on slow networks\.\n {2}\*\*Evidence:\*\* three 401s in the ledger, all within 200ms of a token boundary\.\n {2}\*\*Hypothesis:\*\* the refresh promise is not shared between callers\.\n/)
+
+    // Sub-bullets stay nested. They passed the old bullet-marker filter and came back at top level,
+    // which silently turned 2 open errors into 4, two of them subjectless fragments.
+    expect(progress).toMatch(/- Migration 0007 leaves an orphaned index on staging\.\n {2}- only reproduces when the table is non-empty\n {2}- `drop index if exists` is missing from the down step\n/)
+    expect(progress).not.toMatch(/^- only reproduces when the table is non-empty/m)
+
+    // The packet's own issue is still appended, inside the section.
+    expect(progress).toMatch(/- Pull-to-refresh fires twice on slow networks[^\n]*\n\n## Next Actions/)
+  })
+
+  it('replaces a wrapped Current Status field without orphaning its tail', () => {
+    const projectRoot = seedProgress(
+      createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET }),
+      WRAPPED_PROGRESS,
+    )
+    expect(runProgress(projectRoot).status).toBe(0)
+    const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8').replace(/\r\n/g, '\n')
+
+    // The whole old value goes, not just its first line: no fragment left speaking for nobody.
+    expect(progress).toMatch(/- Blockers: see Open Errors\n\n## Last Completed Slices/)
+    expect(progress).not.toMatch(/are both pending as of 2026-07-22/)
+    expect(progress).not.toMatch(/itself, only the deploy/)
+  })
+
+  // Markdown lets a list item hold several paragraphs, so a blank line does not end a field's
+  // value: stopping at it left the second paragraph orphaned. But consuming "to the next bullet or
+  // ## heading" would swallow the human's own unindented prose, which is this same data-loss bug in
+  // a new place. Both directions are asserted together so neither fix can be made by breaking the
+  // other.
+  const BLANK_LINE_PROGRESS = [
+    '# progress.md',
+    '',
+    '## Current Status',
+    '- Working on: Slice 3',
+    '- Next: pending',
+    '- Blockers: RLS policy review is pending',
+    '',
+    '  and the migration rollback drill has not been run either.',
+    '',
+    'Free prose the human wrote under the section, belonging to no field.',
+    '',
+    '## Last Completed Slices',
+    '1) (empty)',
+    '2) (empty)',
+    '3) (empty)',
+    '',
+    '## Open Errors',
+    '- (none)',
+    '',
+    '## Next Actions',
+    '- x',
+    '',
+    '## Deploy Notes',
+    '- x',
+    '',
+  ].join('\n')
+
+  it('takes a field value spanning a blank line, and only that', () => {
+    const projectRoot = seedProgress(
+      createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET }),
+      BLANK_LINE_PROGRESS,
+    )
+    expect(runProgress(projectRoot).status).toBe(0)
+    const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8').replace(/\r\n/g, '\n')
+
+    // The indented second paragraph was part of the old value, so it goes with it.
+    expect(progress).not.toMatch(/and the migration rollback drill has not been run/)
+
+    // The unindented prose is the human's, not the field's: consuming to the next bullet/## kills it.
+    expect(progress).toMatch(/Free prose the human wrote under the section, belonging to no field\./)
+    expect(progress).toMatch(/- Blockers: see Open Errors\n\nFree prose the human wrote/)
+  })
+
+  it('is idempotent on a file with wrapped bullets', () => {
+    const projectRoot = seedProgress(
+      createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET }),
+      WRAPPED_PROGRESS,
+    )
+    expect(runProgress(projectRoot).status).toBe(0)
+    const first = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
+    expect(runProgress(projectRoot).status).toBe(0)
+    const second = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
+
+    // Re-running the same packet must not stack a duplicate issue nor erode the section further.
+    expect(second).toBe(first)
+    expect(second.match(/Pull-to-refresh fires twice/g)?.length).toBe(1)
+  })
+
   it('preserves the blank line before the next heading', () => {
     const projectRoot = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET })
     expect(runProgress(projectRoot).status).toBe(0)
