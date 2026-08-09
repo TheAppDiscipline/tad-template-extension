@@ -188,6 +188,85 @@ try { await applyPatches(${JSON.stringify(projectRoot)}) } catch (err) { console
     expect(backups.length, `expected 2 distinct backups, got ${backups.join(', ')}`).toBe(2)
   }, 20000)
 
+  // Ported from the dogfood app: replace_section keeps the anchor line and splices CONTENT after
+  // it, so a CONTENT block that repeats the heading writes it twice and every later patch to that
+  // section then fails with "Duplicate anchor". replace_block replaces the anchor line itself, so
+  // there the repeated heading is the one that must survive.
+  it('patch replace_section drops, and replace_block keeps, a CONTENT block that repeats the anchor', () => {
+    const headingCount = (md: string) => md.split('\n').filter((l) => l.trim() === '## Local Section').length
+
+    const section = createPatchProject()
+    fs.appendFileSync(path.join(section, 'progress.md'), '\n## Local Section\n\n- old content\n', 'utf8')
+    fs.writeFileSync(
+      path.join(section, '.discipline', 'patches', 'pending', 'dup-in-content.md'),
+      '# Repeated Anchor\n\nTARGET_FILE: progress.md\nPATCH_MODE: replace_section\nANCHOR: ## Local Section\n\n### CONTENT\n## Local Section\nSECTION_NO_DUPLICATE_HEADING\n',
+      'utf8',
+    )
+    const sectionResult = runTsx('tools/discipline/apply-patch.ts', ['--project-dir', section])
+    expect(sectionResult.status, out(sectionResult)).toBe(0)
+    expect(out(sectionResult)).toMatch(/CONTENT repeated the anchor/)
+    const sectionMd = fs.readFileSync(path.join(section, 'progress.md'), 'utf8')
+    expect(sectionMd).toMatch(/SECTION_NO_DUPLICATE_HEADING/)
+    expect(headingCount(sectionMd), 'the anchor heading must appear exactly once').toBe(1)
+
+    const block = createPatchProject()
+    fs.appendFileSync(path.join(block, 'progress.md'), '\n## Local Section\n\n- old content\n', 'utf8')
+    fs.writeFileSync(
+      path.join(block, '.discipline', 'patches', 'pending', 'block-keeps-anchor.md'),
+      '# Block Keeps Anchor\n\nTARGET_FILE: progress.md\nPATCH_MODE: replace_block\nANCHOR: ## Local Section\n\n### CONTENT\n## Local Section\nBLOCK_KEEPS_HEADING\n',
+      'utf8',
+    )
+    const blockResult = runTsx('tools/discipline/apply-patch.ts', ['--project-dir', block])
+    expect(blockResult.status, out(blockResult)).toBe(0)
+    expect(out(blockResult)).not.toMatch(/CONTENT repeated the anchor/)
+    const blockMd = fs.readFileSync(path.join(block, 'progress.md'), 'utf8')
+    expect(blockMd).toMatch(/BLOCK_KEEPS_HEADING/)
+    expect(headingCount(blockMd), 'the anchor heading must survive exactly once').toBe(1)
+  }, 20000)
+
+  // The rollback's own failure path: with the restore forced to fail the batch really is
+  // half-patched, and `count` must be the number of state files left carrying a patch.
+  it('patch reports an incomplete rollback and counts only the files left modified', () => {
+    const projectRoot = createPatchProject()
+    fs.copyFileSync(path.join(repoRoot, 'findings.md'), path.join(projectRoot, 'findings.md'))
+    const pendingDir = path.join(projectRoot, '.discipline', 'patches', 'pending')
+    fs.writeFileSync(path.join(pendingDir, 'a-valid-findings.md'),
+      '# Valid\n\nTARGET_FILE: findings.md\nPATCH_MODE: append\nANCHOR: ## Decisions\n\n### CONTENT\n- ROLLBACK_FAILURE_MARKER\n', 'utf8')
+    fs.writeFileSync(path.join(pendingDir, 'b-broken-progress.md'),
+      '# Broken\n\nTARGET_FILE: progress.md\nPATCH_MODE: append\nANCHOR: ## Anchor That Does Not Exist\n\n### CONTENT\nnever applied\n', 'utf8')
+
+    const script = path.join(projectRoot, 'failing-rollback.mjs')
+    fs.writeFileSync(
+      script,
+      `import fs from 'node:fs'
+import { applyPatches } from '${pathToFileURL(path.join(repoRoot, 'tools', 'discipline', 'apply-patch.ts')).href}'
+const ops = {
+  existsSync: (p) => fs.existsSync(p),
+  copyFileSync: (src, dest) => {
+    if (dest.endsWith('findings.md')) throw new Error('EPERM: simulated read-only target')
+    fs.copyFileSync(src, dest)
+  },
+  renameSync: (src, dest) => { fs.renameSync(src, dest) },
+}
+try { await applyPatches(${JSON.stringify(projectRoot)}, false, ops) } catch (err) { console.log('FAILED:' + err.message) }
+`,
+      'utf8',
+    )
+    const output = out(runTsx(script))
+    expect(output).toMatch(/Rollback incomplete: 1 of 1 state file\(s\) could not be restored/)
+    expect(fs.readFileSync(path.join(projectRoot, 'findings.md'), 'utf8')).toMatch(/ROLLBACK_FAILURE_MARKER/)
+
+    const ledgerDir = path.join(projectRoot, '.discipline', 'ledger')
+    const events = fs.readdirSync(ledgerDir)
+      .flatMap((f) => fs.readFileSync(path.join(ledgerDir, f), 'utf8').trim().split('\n'))
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+    const failure = events.find((e) => e.event === 'patch_applied' && e.ok === false)
+    expect(failure.count, 'count = state files left carrying a patch').toBe(1)
+    expect(failure.rollback_failures).toBe(1)
+    expect(failure.stranded_patches).toBe(0)
+  }, 20000)
+
   // applyPatches is imported by run.ts and watch.ts. If it exits the process on failure, their
   // finally blocks never run (the slice lease in run.ts). The core must reject; only the CLI
   // entrypoint decides an exit code.
