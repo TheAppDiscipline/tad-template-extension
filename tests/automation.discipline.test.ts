@@ -132,7 +132,7 @@ describe('Step 5 paste-ready assembly', () => {
   // Mirror of the slice-identity assertions the other lanes carry in tooling.discipline.test.js.
   // Identity lives in tools/discipline/lib/slice-identity.ts, byte-identical across the 4 templates.
   it('resolves a slice by identity, writes a per-slice handoff, and refuses another slice packet', () => {
-    const plan = '# task_plan.md\n\n## 4) Ready Slices\n\n## Slice S13 - Sync engine\n- Status: ready\n\n## Slice 14 - Other\n- Status: ready\n'
+    const plan = '# task_plan.md\n\n## 4) Ready Slices\n\n## Slice S13 - Sync engine\n- Status: ready\n\n## Slice 14 - Other\n- Status: ready\n\n## Slice 99 - Planned, but its packet belongs to another slice\n- Status: ready\n'
     const projectRoot = createDisciplineProject({
       'STEP_5_SLICE_PACKET_13.md': '# STEP_5_SLICE_PACKET\n\nSTATUS: ready\n\n## Slice\n- Slice S13\n\n## Goal\nSync engine\n',
     })
