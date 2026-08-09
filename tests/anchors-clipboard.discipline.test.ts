@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 // Extension runs its tests with vitest (not node:test), so this file
 // reimplements in vitest the anchor-NFC, batch-rollback and clipboard assertions
@@ -126,6 +126,102 @@ describe('anchor NFC normalization + clipboard command (parity with the other la
     expect(failure, 'expected a patch_applied event with ok: false').toBeTruthy()
     expect(failure.count).toBe(0)
     expect(failure.rollback_failures).toBe(0)
+  }, 20000)
+
+  // The transactional window: the target is written BEFORE the patch file moves to applied/.
+  // A failure inside that window (creating applied/, moving the patch) used to escape the
+  // rollback, because the journal entry was only pushed after the move succeeded. Replacing
+  // applied/ with a regular file makes the mkdir throw at exactly that point.
+  it('patch rolls back a failure that happens after the target was written', () => {
+    const projectRoot = createPatchProject()
+    fs.copyFileSync(path.join(repoRoot, 'findings.md'), path.join(projectRoot, 'findings.md'))
+    const appliedDir = path.join(projectRoot, '.discipline', 'patches', 'applied')
+    fs.rmSync(appliedDir, { recursive: true, force: true })
+    fs.writeFileSync(appliedDir, 'not a directory\n', 'utf8')
+
+    fs.writeFileSync(
+      path.join(projectRoot, '.discipline', 'patches', 'pending', 'post-write-failure.md'),
+      '# Post Write Failure\n\nTARGET_FILE: findings.md\nPATCH_MODE: append\nANCHOR: ## Decisions\n\n### CONTENT\n- POST_WRITE_MARKER_MUST_NOT_SURVIVE\n',
+      'utf8',
+    )
+    const findingsBefore = fs.readFileSync(path.join(projectRoot, 'findings.md'), 'utf8')
+
+    const result = runTsx('tools/discipline/apply-patch.ts', ['--project-dir', projectRoot])
+    expect(result.status, out(result)).not.toBe(0)
+    expect(out(result)).toMatch(/Rollback complete/)
+    expect(fs.readFileSync(path.join(projectRoot, 'findings.md'), 'utf8')).toBe(findingsBefore)
+    expect(fs.readdirSync(path.join(projectRoot, '.discipline', 'patches', 'pending'))).toEqual(['post-write-failure.md'])
+  }, 20000)
+
+  // Two patches against the SAME file in one batch, clock frozen so both backups resolve to the
+  // identical name. The engine must claim each name atomically and remember the exact path it
+  // wrote: one shared backup slot makes the rollback restore an intermediate state.
+  it('patch keeps one backup per write when two patches hit the same file on the same millisecond', () => {
+    const projectRoot = createPatchProject()
+    fs.copyFileSync(path.join(repoRoot, 'findings.md'), path.join(projectRoot, 'findings.md'))
+    const pendingDir = path.join(projectRoot, '.discipline', 'patches', 'pending')
+    fs.writeFileSync(path.join(pendingDir, 'a-first-decisions.md'),
+      '# First\n\nTARGET_FILE: findings.md\nPATCH_MODE: append\nANCHOR: ## Decisions\n\n### CONTENT\n- FIRST_MARKER_MUST_NOT_SURVIVE\n', 'utf8')
+    fs.writeFileSync(path.join(pendingDir, 'b-second-risks.md'),
+      '# Second\n\nTARGET_FILE: findings.md\nPATCH_MODE: append\nANCHOR: ## Risks\n\n### CONTENT\n- SECOND_MARKER_MUST_NOT_SURVIVE\n', 'utf8')
+    fs.writeFileSync(path.join(pendingDir, 'c-broken-progress.md'),
+      '# Broken\n\nTARGET_FILE: progress.md\nPATCH_MODE: append\nANCHOR: ## Anchor That Does Not Exist\n\n### CONTENT\nnever applied\n', 'utf8')
+    const findingsBefore = fs.readFileSync(path.join(projectRoot, 'findings.md'), 'utf8')
+
+    const script = path.join(projectRoot, 'frozen-clock-apply.mjs')
+    fs.writeFileSync(
+      script,
+      `// Freeze the clock so every backup in the batch wants the same base name.
+Date.now = () => 1780000000000
+const { applyPatches } = await import('${pathToFileURL(path.join(repoRoot, 'tools', 'discipline', 'apply-patch.ts')).href}')
+try { await applyPatches(${JSON.stringify(projectRoot)}) } catch (err) { console.log('FAILED:' + err.message) }
+`,
+      'utf8',
+    )
+    const result = runTsx(script)
+    expect(out(result)).toMatch(/FAILED:Patch failed/)
+
+    const findingsAfter = fs.readFileSync(path.join(projectRoot, 'findings.md'), 'utf8')
+    expect(findingsAfter).toBe(findingsBefore)
+    expect(findingsAfter.includes('FIRST_MARKER_MUST_NOT_SURVIVE'), 'the first patch must be undone too').toBe(false)
+    const backups = fs.readdirSync(path.join(projectRoot, '.discipline', 'backups')).filter((f) => f.startsWith('findings.md.'))
+    expect(backups.length, `expected 2 distinct backups, got ${backups.join(', ')}`).toBe(2)
+  }, 20000)
+
+  // applyPatches is imported by run.ts and watch.ts. If it exits the process on failure, their
+  // finally blocks never run (the slice lease in run.ts). The core must reject; only the CLI
+  // entrypoint decides an exit code.
+  it('applyPatches rejects instead of killing the importing process', () => {
+    const projectRoot = createPatchProject()
+    fs.writeFileSync(
+      path.join(projectRoot, '.discipline', 'patches', 'pending', 'broken-for-import.md'),
+      '# Broken For Import\n\nTARGET_FILE: progress.md\nPATCH_MODE: append\nANCHOR: ## Anchor That Does Not Exist\n\n### CONTENT\nnever applied\n',
+      'utf8',
+    )
+    const marker = path.join(projectRoot, 'finally-ran.txt')
+    const script = path.join(projectRoot, 'import-apply.mjs')
+    fs.writeFileSync(
+      script,
+      `import fs from 'node:fs'
+import { applyPatches, PatchBatchError } from '${pathToFileURL(path.join(repoRoot, 'tools', 'discipline', 'apply-patch.ts')).href}'
+let code = 0
+try {
+  await applyPatches(${JSON.stringify(projectRoot)})
+  code = 99
+} catch (err) {
+  console.log('CAUGHT:' + (err instanceof PatchBatchError ? 'PatchBatchError' : err?.constructor?.name))
+  code = 7
+} finally {
+  fs.writeFileSync(${JSON.stringify(marker)}, 'finally ran\\n', 'utf8')
+}
+process.exit(code)
+`,
+      'utf8',
+    )
+    const result = runTsx(script)
+    expect(result.status, out(result)).toBe(7)
+    expect(fs.existsSync(marker), 'the importing process must reach its own finally block').toBe(true)
+    expect(out(result)).toMatch(/CAUGHT:PatchBatchError/)
   }, 20000)
 
   it('discipline tooling never shells out to clip.exe (OEM codepage corrupts UTF-8 accents)', () => {

@@ -1071,6 +1071,33 @@ describe('Phase-2 adapters + run reconciler', () => {
     fs.rmSync(repo, { recursive: true, force: true })
   })
 
+  // A failed patch inside `discipline run` must not strand the slice lease. applyPatches is
+  // imported there, so exiting the process instead of throwing would skip run.ts's finally block
+  // and leave .discipline/locks/slice-<id>.lock behind, blocking every later run of that slice.
+  it('run: releases the slice lease and the writer lock when the patch application fails', () => {
+    const gitProbe = spawnSync('git', ['--version'], { encoding: 'utf8' })
+    if (gitProbe.status !== 0) return
+    const repo = makeRunFixtureRepo()
+    // The fake builder emits a FINDINGS_APPEND_BLOCK anchored at "## Decisions". Dropping that
+    // heading makes the extracted patch fail while the run holds the lease.
+    fs.writeFileSync(path.join(repo, 'findings.md'), '# findings.md\n\n## Risks\n- none\n', 'utf8')
+    spawnSync('git', ['commit', '-qam', 'drop the Decisions anchor'], { cwd: repo, encoding: 'utf8' })
+
+    const env = { ...process.env, DISCIPLINE_FAKE_PROVIDER_CMD: fakeCli, FAKE_MODE: 'build', FAKE_BUILD_DIR: repo }
+    const res = spawnSync(process.execPath, [tsxCli, 'tools/discipline/run.ts', '--slice', '1', '--yes', '--no-open', '--project-dir', repo], {
+      cwd: repoRoot, env, encoding: 'utf8',
+    })
+    const out = getOutput(res)
+    expect(res.status, out).toBe(2)
+    expect(out).toMatch(/Run failed: Patch failed/)
+
+    const locksDir = path.join(repo, '.discipline', 'locks')
+    const locks = fs.existsSync(locksDir) ? fs.readdirSync(locksDir) : []
+    expect(locks.filter((f) => f.startsWith('slice-')), 'the slice lease must be released').toEqual([])
+    expect(locks.includes('writer.lock'), 'the writer lock must be released').toBe(false)
+    fs.rmSync(repo, { recursive: true, force: true })
+  }, 60000)
+
   it('run: cross-validate-only mode writes a report against the current diff (temp repo)', () => {
     const gitProbe = spawnSync('git', ['--version'], { encoding: 'utf8' })
     if (gitProbe.status !== 0) return
