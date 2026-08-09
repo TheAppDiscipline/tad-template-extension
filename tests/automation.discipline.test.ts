@@ -129,6 +129,35 @@ function runTsxEval(dir: string, moduleRelPath: string, scriptBody: string) {
 }
 
 describe('Step 5 paste-ready assembly', () => {
+  // Mirror of the slice-identity assertions the other lanes carry in tooling.discipline.test.js.
+  // Identity lives in tools/discipline/lib/slice-identity.ts, byte-identical across the 4 templates.
+  it('resolves a slice by identity, writes a per-slice handoff, and refuses another slice packet', () => {
+    const plan = '# task_plan.md\n\n## 4) Ready Slices\n\n## Slice S13 - Sync engine\n- Status: ready\n\n## Slice 14 - Other\n- Status: ready\n'
+    const projectRoot = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_13.md': '# STEP_5_SLICE_PACKET\n\nSTATUS: ready\n\n## Slice\n- Slice S13\n\n## Goal\nSync engine\n',
+    })
+    fs.writeFileSync(path.join(projectRoot, 'task_plan.md'), plan, 'utf8')
+
+    // "S13" and "13" are the same slice, and the handoff carries the id in its name and header.
+    for (const requested of ['S13', '13']) {
+      const res = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--slice', requested, '--project-dir', projectRoot])
+      expect(res.status, getOutput(res)).toBe(0)
+    }
+    const handoff = fs.readFileSync(path.join(projectRoot, '.discipline', 'paste-ready', 'step-5-13-input.md'), 'utf8')
+    expect(handoff).toMatch(/SLICE: 13/)
+    expect(handoff).toMatch(/Sync engine/)
+
+    // A generic packet that names another slice is refused instead of assembled.
+    fs.writeFileSync(
+      path.join(projectRoot, '.discipline', 'packets', 'STEP_5_SLICE_PACKET.md'),
+      '# STEP_5_SLICE_PACKET\n\nSTATUS: ready\n\n## Slice\n- Slice 14\n\n## Goal\nSomething else\n',
+      'utf8',
+    )
+    const foreign = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--slice', '99', '--project-dir', projectRoot])
+    expect(foreign.status).not.toBe(0)
+    expect(getOutput(foreign)).toMatch(/is for slice "14", not "99"/)
+  }, 30000)
+
   it('includes only the context packets declared by the slice', () => {
     const projectRoot = createDisciplineProject({
       'STEP_5_SLICE_PACKET.md': '# STEP_5_SLICE_PACKET\n\nCONTEXT_PACKETS: none\n',
@@ -1027,7 +1056,9 @@ describe('Phase-2 adapters + run reconciler', () => {
     const res = runTsx('tools/discipline/run.ts', ['--slice', '1', '--project-dir', repo])
     expect(res.status, getOutput(res)).toBe(0)
     expect(getOutput(res)).toMatch(/level 1|semi-automatic/i)
-    expect(fs.existsSync(path.join(repo, '.discipline', 'paste-ready', 'step-5-input.md'))).toBe(true)
+    // L1 assembles the handoff for THIS slice, so its name carries the slice id.
+    expect(fs.existsSync(path.join(repo, '.discipline', 'paste-ready', 'step-5-1-input.md'))).toBe(true)
+    expect(getOutput(res)).toMatch(/legacy generic STEP_5_SLICE_PACKET\.md/)
     fs.rmSync(repo, { recursive: true, force: true })
   })
 
