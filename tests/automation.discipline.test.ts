@@ -1592,7 +1592,7 @@ describe('discipline:progress (update-progress.ts)', () => {
     })
     const redOut = getOutput(drive(red))
     expect(redOut).toMatch(/Contradictory slice declarations/)
-    expect(redOut).toMatch(/Not marking anything consumed and not advancing/)
+    expect(redOut).toMatch(/Nothing written/)
     expect(fs.readFileSync(path.join(red, '.discipline', 'packets', 'STEP_5_SLICE_PACKET_13.md'), 'utf8'))
       .not.toMatch(/status: consumed/)
   }, 60000)
