@@ -1552,6 +1552,51 @@ describe('discipline:progress (update-progress.ts)', () => {
     expect((progress.match(/^### \d{4}-\d{2}-\d{2} /gm) || []).length).toBe(1)
   })
 
+  // Consumption is recorded in place, and only on a green gate for THAT slice: the packet keeps
+  // its filename and its body. A completion packet that names two slices closes none of them.
+  it('watch marks a slice packet consumed in place, and refuses a contradictory completion packet', () => {
+    const slicePacket = ['---', 'slice: S13', 'status: ready', '---', '', '# STEP_5_SLICE_PACKET', '',
+      'SLICE: S13 - Sync engine', '', '## Goal', '- x', ''].join('\n')
+    const drive = (projectRoot: string) => {
+      const packetPath = path.join(projectRoot, '.discipline', 'packets', 'SLICE_COMPLETION_PACKET.md')
+      const tester = path.join(projectRoot, 'consume-tester.mjs')
+      const watchUrl = pathToImport(path.join(repoRoot, 'tools', 'discipline', 'watch.ts'))
+      fs.writeFileSync(tester, [
+        `import { handlePacket } from '${watchUrl}'`,
+        `await handlePacket(${JSON.stringify(projectRoot)}, ${JSON.stringify(packetPath)})`,
+        `console.log('done')`,
+      ].join('\n'), 'utf8')
+      return spawnSync(process.execPath, [tsxCli, tester], { cwd: repoRoot, env: process.env, encoding: 'utf8', timeout: 30000 })
+    }
+
+    const green = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_13.md': slicePacket,
+      'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', 'SLICE: S13', '', '### Outcome', '- done', '',
+        '### Gates passed', '- GATE_STATE: passed', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
+      'STEP_4_EXECUTION_PACKET.md': '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\nbody\n',
+    })
+    expect(drive(green).status).toBe(0)
+    const markedPath = path.join(green, '.discipline', 'packets', 'STEP_5_SLICE_PACKET_13.md')
+    const marked = fs.readFileSync(markedPath, 'utf8')
+    expect(marked).toMatch(/^status: consumed$/m)
+    expect(marked).toMatch(/SLICE: S13 - Sync engine/)
+    expect(fs.readdirSync(path.join(green, '.discipline', 'packets')).filter((f) => f.startsWith('STEP_5_SLICE_PACKET')))
+      .toEqual(['STEP_5_SLICE_PACKET_13.md'])
+
+    const red = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_13.md': slicePacket,
+      'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '## Slice', '- Slice S13', '',
+        '## S14 - the heading says another slice', '', '### Outcome', '- done', '',
+        '### Gates passed', '- GATE_STATE: passed', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
+      'STEP_4_EXECUTION_PACKET.md': '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\nbody\n',
+    })
+    const redOut = getOutput(drive(red))
+    expect(redOut).toMatch(/Contradictory slice declarations/)
+    expect(redOut).toMatch(/Not marking anything consumed and not advancing/)
+    expect(fs.readFileSync(path.join(red, '.discipline', 'packets', 'STEP_5_SLICE_PACKET_13.md'), 'utf8'))
+      .not.toMatch(/status: consumed/)
+  }, 60000)
+
   it('does not assemble the next handoff when the completion packet is refused', () => {
     const projectRoot = createDisciplineProject({
       'SLICE_COMPLETION_PACKET.md': '## SLICE_COMPLETION_PACKET\n\n### Slice\n- Slice 1\n\n### Scope delivered\n- did stuff\n',
