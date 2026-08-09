@@ -1597,8 +1597,66 @@ describe('discipline:progress (update-progress.ts)', () => {
       .not.toMatch(/status: consumed/)
   }, 60000)
 
+  // Mirrors of the three refusals the other lanes cover: a completion that names no slice, a Step 5
+  // selection with nothing ready, and a closure whose packet cannot carry the record. All three
+  // must leave progress.md, the packets and the handoffs untouched.
+  it('watch refuses a completion packet that names no slice, assembles nothing when none is ready, and stops when the record cannot be written', () => {
+    const slicePacket = ['---', 'slice: S13', 'status: ready', '---', '', '# STEP_5_SLICE_PACKET', '',
+      'SLICE: S13 - Sync engine', '', '## Goal', '- x', ''].join('\n')
+    const drive = (projectRoot: string, packetFile: string) => {
+      const packetPath = path.join(projectRoot, '.discipline', 'packets', packetFile)
+      const tester = path.join(projectRoot, `drive-${packetFile}.mjs`)
+      const watchUrl = pathToImport(path.join(repoRoot, 'tools', 'discipline', 'watch.ts'))
+      fs.writeFileSync(tester, [
+        `import { handlePacket } from '${watchUrl}'`,
+        `await handlePacket(${JSON.stringify(projectRoot)}, ${JSON.stringify(packetPath)})`,
+        `console.log('done')`,
+      ].join('\n'), 'utf8')
+      return spawnSync(process.execPath, [tsxCli, tester], { cwd: repoRoot, env: process.env, encoding: 'utf8', timeout: 30000 })
+    }
+    const pasteReadyOf = (projectRoot: string) => {
+      const dir = path.join(projectRoot, '.discipline', 'paste-ready')
+      return fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.md')) : []
+    }
+
+    // 1. A completion packet with no slice declaration at all.
+    const anonymous = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_13.md': slicePacket,
+      'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Outcome', '- done', '',
+        '### Gates passed', '- GATE_STATE: passed', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
+      'STEP_4_EXECUTION_PACKET.md': '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\nbody\n',
+    })
+    const progressBefore = fs.readFileSync(path.join(anonymous, 'progress.md'))
+    const anonymousOut = getOutput(drive(anonymous, 'SLICE_COMPLETION_PACKET.md'))
+    expect(anonymousOut).toMatch(/does not say which slice it closes/)
+    expect(anonymousOut).not.toMatch(/Updating progress/)
+    expect(fs.readFileSync(path.join(anonymous, 'progress.md')).equals(progressBefore), 'progress.md must be byte-identical').toBe(true)
+    expect(pasteReadyOf(anonymous)).toEqual([])
+
+    // 2. Nothing ready: a draft generic packet must not reach Step 5 through the slice-less path.
+    const draft = createDisciplineProject({
+      'STEP_5_SLICE_PACKET.md': slicePacket.replace('status: ready', 'status: draft'),
+      'STEP_4_EXECUTION_PACKET.md': '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\n### Slices\n- Slice S13\n',
+    })
+    expect(getOutput(drive(draft, 'STEP_4_EXECUTION_PACKET.md'))).toMatch(/No ready Step 5 packet/)
+    expect(pasteReadyOf(draft)).toEqual([])
+
+    // 3. The packet exists but cannot carry the record (unterminated frontmatter).
+    const unwritable = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_13.md': ['---', 'slice: S13', 'status: ready', '', '# STEP_5_SLICE_PACKET', '', 'SLICE: S13', ''].join('\n'),
+      'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', 'SLICE: S13', '', '### Outcome', '- done', '',
+        '### Gates passed', '- GATE_STATE: passed', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
+      'STEP_4_EXECUTION_PACKET.md': '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\nbody\n',
+    })
+    const unwritableOut = getOutput(drive(unwritable, 'SLICE_COMPLETION_PACKET.md'))
+    expect(unwritableOut).toMatch(/Cannot record the closure of slice 13/)
+    expect(unwritableOut).toMatch(/unterminated frontmatter/)
+    expect(pasteReadyOf(unwritable)).toEqual([])
+  }, 90000)
+
   it('does not assemble the next handoff when the completion packet is refused', () => {
     const projectRoot = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_1.md': ['---', 'slice: 1', 'status: ready', '---', '', '# STEP_5_SLICE_PACKET', '', 'SLICE: 1', '', '## Goal', '- x', ''].join('\n'),
       'SLICE_COMPLETION_PACKET.md': '## SLICE_COMPLETION_PACKET\n\n### Slice\n- Slice 1\n\n### Scope delivered\n- did stuff\n',
     })
     const packetPath = path.join(projectRoot, '.discipline', 'packets', 'SLICE_COMPLETION_PACKET.md')
@@ -1632,6 +1690,7 @@ describe('discipline:progress (update-progress.ts)', () => {
 
   it('does not advance the pipeline when the gate is not green (unverified)', () => {
     const projectRoot = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_1.md': ['---', 'slice: 1', 'status: ready', '---', '', '# STEP_5_SLICE_PACKET', '', 'SLICE: 1', '', '## Goal', '- x', ''].join('\n'),
       'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 1', '',
         '### Outcome', '- done', '', '### Gates passed', '- npm run gate', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
       // Reentry also needs the validated execution packet; this isolates the block to the completion gate.
@@ -1648,6 +1707,7 @@ describe('discipline:progress (update-progress.ts)', () => {
 
   it('advances the pipeline only on a green gate', () => {
     const projectRoot = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_1.md': ['---', 'slice: 1', 'status: ready', '---', '', '# STEP_5_SLICE_PACKET', '', 'SLICE: 1', '', '## Goal', '- x', ''].join('\n'),
       'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 1', '',
         '### Outcome', '- done', '', '### Gates passed', '- GATE_STATE: passed', '- npm run gate: 0 failures', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
       'STEP_4_EXECUTION_PACKET.md': '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\nbody\n',
@@ -1661,6 +1721,7 @@ describe('discipline:progress (update-progress.ts)', () => {
 
   it('keeps blocking across events while a non-green completion lingers', () => {
     const projectRoot = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_1.md': ['---', 'slice: 1', 'status: ready', '---', '', '# STEP_5_SLICE_PACKET', '', 'SLICE: 1', '', '## Goal', '- x', ''].join('\n'),
       'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 1', '',
         '### Outcome', '- done', '', '### Gates passed', '- npm run gate', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
       // Validated execution packet present throughout, so the block is the lingering completion gate.
@@ -1679,6 +1740,7 @@ describe('discipline:progress (update-progress.ts)', () => {
 
   it('blocks a higher-priority handoff while a non-green completion lingers', () => {
     const projectRoot = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_1.md': ['---', 'slice: 1', 'status: ready', '---', '', '# STEP_5_SLICE_PACKET', '', 'SLICE: 1', '', '## Goal', '- x', ''].join('\n'),
       'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '### Slice', '- Slice 1', '',
         '### Outcome', '- done', '', '### Gates passed', '- GATE_STATE: unverified', '', '### Deploy signal', '- ready_for_preview', ''].join('\n'),
       'DEPLOY_READINESS_PACKET.md': '## DEPLOY_READINESS_PACKET\n\nbody\n',
