@@ -1704,6 +1704,59 @@ describe('discipline:progress (update-progress.ts)', () => {
     expect(out.readyTarget.ok).toBe(true)
   }, 90000)
 
+  // No location outranks another, none is skipped because another exists, and both engines read
+  // the same document: an inline GATES field used to hide the sections, a second section with the
+  // same name was invisible, and frontmatter was visible to one engine only.
+  it('every gate and outcome location is read, with one scope for both engines', () => {
+    const evalBoth = (body: string) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ext-locations-'))
+      const tester = path.join(dir, 'probe.mjs')
+      fs.writeFileSync(tester, [
+        `import * as slice from '${pathToImport(path.join(repoRoot, 'tools', 'discipline', 'lib', 'slice-identity.ts'))}'`,
+        `import * as packet from '${pathToImport(path.join(repoRoot, 'tools', 'discipline', 'lib', 'completion-packet.ts'))}'`,
+        `import * as progress from '${pathToImport(path.join(repoRoot, 'tools', 'discipline', 'update-progress.ts'))}'`,
+        `const emit = (o) => console.log('RESULT=' + JSON.stringify(o))`,
+        body,
+      ].join('\n'), 'utf8')
+      const result = spawnSync(process.execPath, [tsxCli, tester], { cwd: repoRoot, env: process.env, encoding: 'utf8', timeout: 30000 })
+      const line = getOutput(result).split('\n').find((l) => l.startsWith('RESULT='))
+      expect(line, getOutput(result)).toBeTruthy()
+      return JSON.parse(line!.slice('RESULT='.length))
+    }
+
+    const inlineVsSection = ['## SLICE_COMPLETION_PACKET', '', 'SLICE: S13', 'GATES: GATE_STATE: passed', 'OUTCOME: done', '',
+      '### Outcome', '- partial', '', '### Gates passed', '- GATE_STATE: failed', ''].join('\n')
+    const twoGateSections = ['## SLICE_COMPLETION_PACKET', '', 'SLICE: S13', '', '### Outcome', '- done', '',
+      '### Gates passed', '- GATE_STATE: passed', '', '### Gates passed', '- GATE_STATE: failed', ''].join('\n')
+    const frontmatterOnly = ['---', 'slice: S13', 'outcome: done', '---', '', '## SLICE_COMPLETION_PACKET', '', 'SLICE: S13', '',
+      '### Gates passed', '- GATE_STATE: passed', ''].join('\n')
+
+    const inlineProject = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': inlineVsSection })
+    const twoGatesProject = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': twoGateSections })
+    const frontmatterProject = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': frontmatterOnly })
+
+    const out = evalBoth(`emit({
+      inlineGate: packet.completionGate(${JSON.stringify(inlineVsSection)}).state,
+      inlineOutcomeOk: packet.readOutcome(${JSON.stringify(inlineVsSection)}).ok,
+      inlineProgressGate: progress.completionGateState(${JSON.stringify(inlineProject)}),
+      inlineConsumed: slice.isSliceConsumed(${JSON.stringify(inlineProject)}, 'S13').consumed,
+      twoGates: packet.completionGate(${JSON.stringify(twoGateSections)}).state,
+      twoGatesConsumed: slice.isSliceConsumed(${JSON.stringify(twoGatesProject)}, 'S13').consumed,
+      frontmatterOutcome: packet.readOutcome(${JSON.stringify(frontmatterOnly)}).outcome,
+      frontmatterConsumed: slice.isSliceConsumed(${JSON.stringify(frontmatterProject)}, 'S13').consumed,
+    })`)
+
+    expect(out.inlineGate).toBe('unverified')
+    expect(out.inlineProgressGate).toBe('unverified')
+    expect(out.inlineOutcomeOk, 'contradictory outcomes must be refused').toBe(false)
+    expect(out.inlineConsumed).toBe(false)
+    expect(out.twoGates).toBe('unverified')
+    expect(out.twoGatesConsumed).toBe(false)
+    // Frontmatter is metadata: invisible to BOTH engines, so it closes nothing.
+    expect(out.frontmatterOutcome).toBe(null)
+    expect(out.frontmatterConsumed).toBe(false)
+  }, 90000)
+
   // A completion packet the progress engine refuses cannot consume a slice either.
   it('watch stops when the progress engine refuses the completion packet', () => {
     const projectRoot = createDisciplineProject({
