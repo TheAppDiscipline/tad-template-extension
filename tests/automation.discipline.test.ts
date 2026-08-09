@@ -1654,6 +1654,82 @@ describe('discipline:progress (update-progress.ts)', () => {
     expect(pasteReadyOf(unwritable)).toEqual([])
   }, 90000)
 
+  // Mirrors of the closing transition: a green gate alone closes nothing, a packet that is not
+  // ready cannot be consumed, a completion the progress engine refuses cannot consume either, and
+  // a conflicting GATE_STATE must read the same way for both engines.
+  it('slice consumption requires the whole closing transition, and reads gates like the progress engine', () => {
+    const sliceEval = (body: string) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ext-consumption-'))
+      const tester = path.join(dir, 'probe.mjs')
+      fs.writeFileSync(tester, [
+        `import * as slice from '${pathToImport(path.join(repoRoot, 'tools', 'discipline', 'lib', 'slice-identity.ts'))}'`,
+        `import * as progress from '${pathToImport(path.join(repoRoot, 'tools', 'discipline', 'update-progress.ts'))}'`,
+        `const emit = (o) => console.log('RESULT=' + JSON.stringify(o))`,
+        body,
+      ].join('\n'), 'utf8')
+      const result = spawnSync(process.execPath, [tsxCli, tester], { cwd: repoRoot, env: process.env, encoding: 'utf8', timeout: 30000 })
+      const line = getOutput(result).split('\n').find((l) => l.startsWith('RESULT='))
+      expect(line, getOutput(result)).toBeTruthy()
+      return JSON.parse(line!.slice('RESULT='.length))
+    }
+    const completion = (outcome: string, gates: string[]) => ['## SLICE_COMPLETION_PACKET', '', 'SLICE: S13', '',
+      '### Outcome', `- ${outcome}`, '', '### Gates passed', ...gates, '', '### Deploy signal', '- ready_for_preview', ''].join('\n')
+    const slicePacket = (status: string) => ['---', 'slice: S13', `status: ${status}`, '---', '', '# STEP_5_SLICE_PACKET', '', 'SLICE: S13', ''].join('\n')
+
+    const done = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': completion('done', ['- GATE_STATE: passed']) })
+    const partial = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': completion('partial', ['- GATE_STATE: passed']) })
+    const conflicting = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': completion('done', ['- GATE_STATE: passed', '- GATE_STATE: failed']) })
+    const draft = createDisciplineProject({ 'STEP_5_SLICE_PACKET_13.md': slicePacket('draft') })
+    const ready = createDisciplineProject({ 'STEP_5_SLICE_PACKET_13.md': slicePacket('ready') })
+
+    const out = sliceEval(`emit({
+      done: slice.isSliceConsumed(${JSON.stringify(done)}, 'S13'),
+      partial: slice.isSliceConsumed(${JSON.stringify(partial)}, 'S13'),
+      conflictingConsumption: slice.isSliceConsumed(${JSON.stringify(conflicting)}, 'S13'),
+      conflictingGate: progress.completionGateState(${JSON.stringify(conflicting)}),
+      draftTarget: slice.resolveConsumptionTarget(${JSON.stringify(draft)}, 'S13'),
+      readyTarget: slice.resolveConsumptionTarget(${JSON.stringify(ready)}, 'S13'),
+    })`)
+
+    expect(out.done.consumed).toBe(true)
+    // A green gate on a partial outcome closes nothing.
+    expect(out.partial.consumed).toBe(false)
+    expect(out.partial.reason).toMatch(/leaves the slice open regardless of the gate/)
+    // Two GATE_STATE declarations: unverified for the progress engine AND for consumption.
+    expect(out.conflictingGate).toBe('unverified')
+    expect(out.conflictingConsumption.consumed).toBe(false)
+    // Only a ready packet can be recorded as consumed.
+    expect(out.draftTarget.ok).toBe(false)
+    expect(out.draftTarget.reason).toMatch(/status draft/)
+    expect(out.readyTarget.ok).toBe(true)
+  }, 90000)
+
+  // A completion packet the progress engine refuses cannot consume a slice either.
+  it('watch stops when the progress engine refuses the completion packet', () => {
+    const projectRoot = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_13.md': ['---', 'slice: S13', 'status: ready', '---', '', '# STEP_5_SLICE_PACKET', '', 'SLICE: S13', '', '## Goal', '- x', ''].join('\n'),
+      // No ### Outcome: updateProgress refuses, so nothing may be consumed.
+      'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', 'SLICE: S13', '', '### Scope delivered', '- did stuff', '',
+        '### Gates passed', '- GATE_STATE: passed', ''].join('\n'),
+      'STEP_4_EXECUTION_PACKET.md': '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\nbody\n',
+    })
+    const packetPath = path.join(projectRoot, '.discipline', 'packets', 'SLICE_COMPLETION_PACKET.md')
+    const tester = path.join(projectRoot, 'progress-refusal-tester.mjs')
+    const watchUrl = pathToImport(path.join(repoRoot, 'tools', 'discipline', 'watch.ts'))
+    fs.writeFileSync(tester, [
+      `import { handlePacket } from '${watchUrl}'`,
+      `await handlePacket(${JSON.stringify(projectRoot)}, ${JSON.stringify(packetPath)})`,
+      `console.log('done')`,
+    ].join('\n'), 'utf8')
+    const out = getOutput(spawnSync(process.execPath, [tsxCli, tester], { cwd: repoRoot, env: process.env, encoding: 'utf8', timeout: 30000 }))
+
+    expect(out).toMatch(/Refused progress.md update/)
+    expect(out).toMatch(/Nothing consumed and nothing assembled/)
+    expect(fs.readFileSync(path.join(projectRoot, '.discipline', 'packets', 'STEP_5_SLICE_PACKET_13.md'), 'utf8')).not.toMatch(/status: consumed/)
+    const pasteReady = path.join(projectRoot, '.discipline', 'paste-ready')
+    expect(fs.existsSync(pasteReady) ? fs.readdirSync(pasteReady).filter((f) => f.endsWith('.md')) : []).toEqual([])
+  }, 60000)
+
   it('does not assemble the next handoff when the completion packet is refused', () => {
     const projectRoot = createDisciplineProject({
       'STEP_5_SLICE_PACKET_1.md': ['---', 'slice: 1', 'status: ready', '---', '', '# STEP_5_SLICE_PACKET', '', 'SLICE: 1', '', '## Goal', '- x', ''].join('\n'),
