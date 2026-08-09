@@ -6,8 +6,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // Extension runs its tests with vitest (not node:test), so this file
-// reimplements in vitest the anchor-NFC and clipboard assertions that
-// tooling.discipline.test.js carries in the other lanes. The files under
+// reimplements in vitest the anchor-NFC, batch-rollback and clipboard assertions
+// that tooling.discipline.test.js carries in the other lanes. The files under
 // tools/discipline are byte-identical across the 4 templates.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -79,6 +79,53 @@ describe('anchor NFC normalization + clipboard command (parity with the other la
     const psCommand = command.args[command.args.length - 1]
     expect(psCommand).toMatch(/Set-Clipboard/)
     expect(psCommand).toMatch(/-Encoding UTF8/)
+  }, 20000)
+
+  // A failed patch must leave the repo exactly as it was found: the batch is all-or-nothing.
+  // Regression: the rollback used to be unreachable. The catch block reported the failure with
+  // disciplineError(), which calls process.exit(1) on the spot, so the rollback, the writer-lock
+  // release and the ledger entry below it never ran. A failing batch left the earlier patches
+  // applied, their patch files moved to applied/ (invisible to the next run's pending/ preflight),
+  // a stale writer.lock, and no record of the failure.
+  it('patch rolls the whole batch back when one patch fails', () => {
+    const projectRoot = createPatchProject()
+    fs.copyFileSync(path.join(repoRoot, 'findings.md'), path.join(projectRoot, 'findings.md'))
+    const pendingDir = path.join(projectRoot, '.discipline', 'patches', 'pending')
+    const appliedDir = path.join(projectRoot, '.discipline', 'patches', 'applied')
+
+    // findings.md is patched before progress.md (PATCH_APPLICATION_ORDER), so the valid patch is
+    // already written to disk by the time the broken one fails.
+    fs.writeFileSync(
+      path.join(pendingDir, 'a-valid-findings.md'),
+      '# Valid Block\n\nTARGET_FILE: findings.md\nPATCH_MODE: append\nANCHOR: ## Decisions\n\n### CONTENT\n- ROLLBACK_MARKER_MUST_NOT_SURVIVE\n',
+      'utf8',
+    )
+    fs.writeFileSync(
+      path.join(pendingDir, 'b-broken-progress.md'),
+      '# Broken Block\n\nTARGET_FILE: progress.md\nPATCH_MODE: append\nANCHOR: ## Anchor That Does Not Exist\n\n### CONTENT\nnever applied\n',
+      'utf8',
+    )
+    const findingsBefore = fs.readFileSync(path.join(projectRoot, 'findings.md'), 'utf8')
+
+    const result = runTsx('tools/discipline/apply-patch.ts', ['--project-dir', projectRoot])
+    expect(result.status, out(result)).not.toBe(0)
+    expect(out(result)).toMatch(/Rollback complete/)
+
+    expect(fs.readFileSync(path.join(projectRoot, 'findings.md'), 'utf8')).toBe(findingsBefore)
+    expect(fs.readdirSync(pendingDir).sort()).toEqual(['a-valid-findings.md', 'b-broken-progress.md'])
+    expect(fs.readdirSync(appliedDir)).toEqual([])
+    expect(fs.existsSync(path.join(projectRoot, '.discipline', 'locks', 'writer.lock'))).toBe(false)
+
+    const ledgerDir = path.join(projectRoot, '.discipline', 'ledger')
+    expect(fs.existsSync(ledgerDir), 'a failed batch must still leave a ledger entry').toBe(true)
+    const events = fs.readdirSync(ledgerDir)
+      .flatMap((f) => fs.readFileSync(path.join(ledgerDir, f), 'utf8').trim().split('\n'))
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+    const failure = events.find((e) => e.event === 'patch_applied' && e.ok === false)
+    expect(failure, 'expected a patch_applied event with ok: false').toBeTruthy()
+    expect(failure.count).toBe(0)
+    expect(failure.rollback_failures).toBe(0)
   }, 20000)
 
   it('discipline tooling never shells out to clip.exe (OEM codepage corrupts UTF-8 accents)', () => {
