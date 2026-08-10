@@ -1757,6 +1757,125 @@ describe('discipline:progress (update-progress.ts)', () => {
     expect(out.frontmatterConsumed).toBe(false)
   }, 90000)
 
+  // The title strip must recognise the packet's OWN title, not "the first heading": a packet whose
+  // identity lives in frontmatter has no title at all, so the first heading IS its first section.
+  // "Any uppercase heading" was still too loose and ate an all-caps SECTION name with it.
+  it('a packet with no title keeps its first section, and fenced fields are examples', () => {
+    const FM = ['---', 'slice: 13', '---', ''].join('\n')
+    const cases: Record<string, string> = {
+      hiddenGate: FM + ['### GATES', '- GATE_STATE: failed', '', '### Outcome', '- done', '', '### Gates', '- GATE_STATE: passed', ''].join('\n'),
+      hiddenOutcome: FM + ['### OUTCOME', '- blocked', '', '### Outcome', '- done', '', '### Gates passed', '- GATE_STATE: passed', ''].join('\n'),
+      onlyUppercaseSection: FM + ['### GATES', '- GATE_STATE: failed', ''].join('\n'),
+      noTitleContradiction: FM + ['### Gates passed', '- GATE_STATE: failed', '', '### Outcome', '- done', '', '### Gates', '- GATE_STATE: passed', ''].join('\n'),
+      noTitleHonest: FM + ['### Outcome', '- done', '', '### Gates passed', '- GATE_STATE: passed', ''].join('\n'),
+      // Inline fields were read from the raw body while sections were read from a fence-free copy,
+      // so a fenced example could close a slice with no operative declaration in the packet.
+      fencedFields: FM + ['## SLICE_COMPLETION_PACKET', '', '### Notes', '```', 'OUTCOME: done', 'GATES: GATE_STATE: passed', '```', ''].join('\n'),
+      titled: FM + ['## SLICE_COMPLETION_PACKET', '', '### Outcome', '- done', '', '### Gates passed', '- GATE_STATE: passed', ''].join('\n'),
+      titledWithSuffix: FM + ['# SLICE_COMPLETION_PACKET - S13', '', '### Outcome', '- done', '', '### Gates passed', '- GATE_STATE: passed', ''].join('\n'),
+      titledWithIdSuffix: FM + ['# SLICE_COMPLETION_PACKET_S13', '', '### Outcome', '- done', '', '### Gates passed', '- GATE_STATE: passed', ''].join('\n'),
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ext-title-'))
+    const tester = path.join(dir, 'probe.mjs')
+    fs.writeFileSync(tester, [
+      `import * as packet from '${pathToImport(path.join(repoRoot, 'tools', 'discipline', 'lib', 'completion-packet.ts'))}'`,
+      `const read = (body) => {`,
+      `  const gate = packet.completionGate(body)`,
+      `  const outcome = packet.readOutcome(body)`,
+      `  return { gate: gate ? gate.state : null, outcome: outcome.ok ? outcome.outcome : 'CONFLICT' }`,
+      `}`,
+      `console.log('RESULT=' + JSON.stringify(Object.fromEntries(Object.entries(${JSON.stringify(cases)}).map(([k, v]) => [k, read(v)]))))`,
+    ].join('\n'), 'utf8')
+    const result = spawnSync(process.execPath, [tsxCli, tester], { cwd: repoRoot, env: process.env, encoding: 'utf8', timeout: 30000 })
+    const line = getOutput(result).split('\n').find((l) => l.startsWith('RESULT='))
+    expect(line, getOutput(result)).toBeTruthy()
+    const out = JSON.parse(line!.slice('RESULT='.length))
+
+    expect(out.hiddenGate).toEqual({ gate: 'unverified', outcome: 'done' })
+    expect(out.hiddenOutcome).toEqual({ gate: 'passed', outcome: 'CONFLICT' })
+    expect(out.onlyUppercaseSection).toEqual({ gate: 'failed', outcome: null })
+    expect(out.noTitleContradiction).toEqual({ gate: 'unverified', outcome: 'done' })
+    expect(out.noTitleHonest).toEqual({ gate: 'passed', outcome: 'done' })
+    expect(out.fencedFields).toEqual({ gate: null, outcome: null })
+    // A real title is still stripped, so the packet's own name is never a declaration.
+    expect(out.titled).toEqual({ gate: 'passed', outcome: 'done' })
+    expect(out.titledWithSuffix).toEqual({ gate: 'passed', outcome: 'done' })
+    expect(out.titledWithIdSuffix).toEqual({ gate: 'passed', outcome: 'done' })
+  }, 60000)
+
+  // "Nothing written" has to be true when it is printed. The watcher used to materialise and apply
+  // a packet's embedded patches before it resolved identity, and it validated the outcome only
+  // inside updateProgress, AFTER those patches had already rewritten the four state files.
+  it('writes nothing for a packet it is about to reject, on identity or on semantics', () => {
+    const patchBlock = ['## FINDINGS_APPEND_BLOCK', '', 'TARGET_FILE: findings.md', 'PATCH_MODE: append', 'ANCHOR: ## Decisions', '',
+      '### CONTENT', '- PATCH_FROM_A_REJECTED_PACKET'].join('\n')
+    const readyPacket = ['---', 'slice: 13', 'status: ready', '---', '', '# STEP_5_SLICE_PACKET', '', 'SLICE: 13', '', '## Goal', '- x', ''].join('\n')
+    const STATE = ['findings.md', 'progress.md', 'task_plan.md', 'discipline.md']
+    const snapshot = (root: string) => STATE.map((f) => fs.readFileSync(path.join(root, f), 'utf8'))
+    const untouched = (root: string, before: string[], note: string) => {
+      expect(STATE.map((f) => fs.readFileSync(path.join(root, f), 'utf8')), note).toEqual(before)
+      const pending = path.join(root, '.discipline', 'patches', 'pending')
+      expect(fs.existsSync(pending) ? fs.readdirSync(pending) : []).toEqual([])
+    }
+
+    // 1. Rejected on identity, with a well-formed patch attached.
+    const contradictory = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_13.md': readyPacket,
+      'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', '## Slice', '- Slice 13', '', '## S14 - the heading says another slice', '',
+        '### Outcome', '- done', '', '### Gates passed', '- GATE_STATE: passed', '', patchBlock].join('\n'),
+    })
+    const identityBefore = snapshot(contradictory)
+    const identityOut = getOutput(runHandle(contradictory))
+    expect(identityOut).toMatch(/Contradictory slice declarations/)
+    expect(identityOut).toMatch(/Nothing written/)
+    untouched(contradictory, identityBefore, 'the embedded patch must not have been applied')
+
+    // 2. Rejected on SEMANTICS: identity resolves, the target is ready, the patch parses, and only
+    // the outcome is missing. That check used to run after applyPatches had rewritten findings.md.
+    const noOutcome = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_13.md': readyPacket,
+      'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', 'SLICE: 13', '',
+        '### Gates passed', '- GATE_STATE: passed', '', patchBlock].join('\n'),
+    })
+    const semanticBefore = snapshot(noOutcome)
+    const semanticOut = getOutput(runHandle(noOutcome))
+    expect(semanticOut).toMatch(/has no "### Outcome"/)
+    expect(semanticOut).toMatch(/Nothing written/)
+    untouched(noOutcome, semanticBefore, 'a packet refused for its outcome must not have applied its patch first')
+  }, 90000)
+
+  // Extraction used to swallow the parse error of an embedded patch block, so the block was
+  // silently dropped and the packet sailed on as if it had never carried one: the watcher's own
+  // rejection path was unreachable and the targeted state file was simply never written.
+  it('rejects a packet whose patch block is malformed, and keeps running', () => {
+    const STATE = ['findings.md', 'progress.md', 'task_plan.md', 'discipline.md']
+    const malformed = createDisciplineProject({
+      'STEP_4_EXECUTION_PACKET.md': '## STEP_4_EXECUTION_PACKET\n\nSTATUS: validated\n\n### Slices\n- Slice 13\n',
+      'SLICE_COMPLETION_PACKET.md': ['## SLICE_COMPLETION_PACKET', '', 'SLICE: 13', '', '### Outcome', '- done', '',
+        '### Gates passed', '- GATE_STATE: passed', '', '## FINDINGS_APPEND_BLOCK', '', 'TARGET_FILE: findings.md', '',
+        '### CONTENT', '- no mode, no anchor'].join('\n'),
+    })
+    const before = STATE.map((f) => fs.readFileSync(path.join(malformed, f), 'utf8'))
+    const script = path.join(malformed, 'two-events.mjs')
+    fs.writeFileSync(script, [
+      `import { handlePacket } from '${pathToImport(path.join(repoRoot, 'tools', 'discipline', 'watch.ts'))}'`,
+      `const packets = ${JSON.stringify(path.join(malformed, '.discipline', 'packets'))}`,
+      `await handlePacket(${JSON.stringify(malformed)}, packets + '/SLICE_COMPLETION_PACKET.md')`,
+      `console.log('FIRST EVENT SURVIVED')`,
+      `await handlePacket(${JSON.stringify(malformed)}, packets + '/STEP_4_EXECUTION_PACKET.md')`,
+      `console.log('SECOND EVENT PROCESSED')`,
+    ].join('\n'), 'utf8')
+    const twoEvents = getOutput(spawnSync(process.execPath, [tsxCli, script], { cwd: repoRoot, env: process.env, encoding: 'utf8', timeout: 60000 }))
+
+    expect(twoEvents).toMatch(/Malformed patch block: PATCH_MODE missing/)
+    expect(twoEvents).toMatch(/Nothing written/)
+    expect(STATE.map((f) => fs.readFileSync(path.join(malformed, f), 'utf8'))).toEqual(before)
+    // And the rejection does not kill the watcher: disciplineError (process.exit) inside the parser
+    // used to take the whole process down with the packet.
+    expect(twoEvents).toMatch(/FIRST EVENT SURVIVED/)
+    expect(twoEvents).toMatch(/SECOND EVENT PROCESSED/)
+  }, 90000)
+
   // A completion packet the progress engine refuses cannot consume a slice either.
   it('watch stops when the progress engine refuses the completion packet', () => {
     const projectRoot = createDisciplineProject({
@@ -1776,8 +1895,10 @@ describe('discipline:progress (update-progress.ts)', () => {
     ].join('\n'), 'utf8')
     const out = getOutput(spawnSync(process.execPath, [tsxCli, tester], { cwd: repoRoot, env: process.env, encoding: 'utf8', timeout: 30000 }))
 
-    expect(out).toMatch(/Refused progress.md update/)
-    expect(out).toMatch(/Nothing consumed and nothing assembled/)
+    // Refused in the preflight now, before anything is written, and the progress engine reuses
+    // the very same check: the two cannot drift into disagreeing about what is recordable.
+    expect(out).toMatch(/has no "### Outcome"/)
+    expect(out).toMatch(/Nothing written/)
     expect(fs.readFileSync(path.join(projectRoot, '.discipline', 'packets', 'STEP_5_SLICE_PACKET_13.md'), 'utf8')).not.toMatch(/status: consumed/)
     const pasteReady = path.join(projectRoot, '.discipline', 'paste-ready')
     expect(fs.existsSync(pasteReady) ? fs.readdirSync(pasteReady).filter((f) => f.endsWith('.md')) : []).toEqual([])
@@ -1798,8 +1919,10 @@ describe('discipline:progress (update-progress.ts)', () => {
     ].join('\n'), 'utf8')
     const result = spawnSync(process.execPath, [tsxCli, tester], { cwd: repoRoot, env: process.env, encoding: 'utf8', timeout: 30000 })
     expect(result.status, getOutput(result)).toBe(0)
-    expect(getOutput(result)).toMatch(/Refused progress.md update/)
-    expect(getOutput(result)).toMatch(/not assembling or opening the next handoff/)
+    // The tick ends in the preflight, so the assembly branch is never reached at all (which is
+    // what the empty paste-ready dir below proves).
+    expect(getOutput(result)).toMatch(/has no "### Outcome"/)
+    expect(getOutput(result)).toMatch(/Nothing written/)
     const pasteReadyDir = path.join(projectRoot, '.discipline', 'paste-ready')
     const files = fs.existsSync(pasteReadyDir) ? fs.readdirSync(pasteReadyDir) : []
     expect(files.length, `found: ${files.join(', ')}`).toBe(0)
