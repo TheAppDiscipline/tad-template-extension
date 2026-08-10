@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
@@ -2451,4 +2452,287 @@ describe('discipline:step4-origin (fail-loud)', () => {
     expect(detect({ 'STEP_4_EXECUTION_PACKET.md': EXEC_VALIDATED, 'PROD_HARDENING_PACKET.md': HARDENING })).toBe('4-hardening')
     expect(detect({ 'PROD_HARDENING_PACKET.md': HARDENING })).toBe(null)
   })
+})
+
+describe('Step 5 packet schema v2 + migration', () => {
+  const V2_FRONTMATTER = [
+    '---',
+    'schema: discipline.packet.step5',
+    'version: 2.0.0',
+    'id: step5:13:20260810T120000',
+    'status: ready',
+    'slice: 13',
+    'affected_surfaces:',
+    '  - ui',
+    'required_gates:',
+    '  - gate',
+    '---',
+    '',
+  ].join('\n')
+
+  const V2_BODY = [
+    '# STEP_5_SLICE_PACKET',
+    '',
+    'SLICE: 13',
+    '',
+    '## Goal',
+    '- Add the shopping list screen.',
+    '',
+    '## Scope',
+    '- IN: list, add, tick.',
+    '- OUT: sharing.',
+    '',
+    '## Contracts',
+    '- items(id, name, done)',
+    '',
+    '## Provider Impact',
+    '- APPLIES: no',
+    '- RATIONALE: the slice only reads the local store, so no provider call is added.',
+    '',
+    '## AI Impact',
+    '- APPLIES: no',
+    '- RATIONALE: listing and ticking items involves no model call at all.',
+    '',
+    '## Reachable States',
+    '| State | Trigger | Committed effects | Returned result | Recovery |',
+    '|---|---|---|---|---|',
+    '| empty | first open | none | empty list | add an item |',
+    '| loaded | items exist | none | the items | reload |',
+    '',
+    '## Acceptance Criteria',
+    '| ID | Setup | Action | Observable result | Negative control |',
+    '|---|---|---|---|---|',
+    '| AC1 | no items | open the list | the empty state renders | seed an item; the empty state must not render |',
+    '| AC2 | one item | tick it | it renders as done | untick it and it renders as pending |',
+    '',
+    '## Falsifiability',
+    '- METHOD: red-evidence',
+    '- AC1 failed against the previous build: the empty state was never rendered.',
+    '',
+    '## Files to touch',
+    '- src/screens/list.tsx',
+    '',
+    '## Deployment Compatibility',
+    '- No migration; the slice is additive.',
+    '',
+    '## Manual Verification',
+    '- Open the app with an empty store and check the empty state.',
+    '',
+    '## Estimate',
+    '- 120 lines of production code.',
+    '',
+  ].join('\n')
+
+  const V2_PACKET = V2_FRONTMATTER + V2_BODY
+  const PLAN = ['# task_plan.md', '', '## 4) Ready Slices', '', '## Slice 13 - list', '- Status: ready', '#### Goal', 'x', ''].join('\n')
+
+  const readCases = (cases: Record<string, string>) => runTsxModule(
+    [
+      'const __out = {}',
+      'for (const [name, content] of Object.entries(' + JSON.stringify(cases) + ')) {',
+      "  const reading = readStep5Packet(content, 'STEP_5_SLICE_PACKET_13.md')",
+      '  __out[name] = {',
+      '    format: reading.format, enforced: reading.enforced,',
+      "    errors: reading.findings.filter((f) => f.severity === 'error').map((f) => f.message),",
+      "    warnings: reading.findings.filter((f) => f.severity === 'warning').map((f) => f.message),",
+      '  }',
+      '}',
+    ],
+    { '{ readStep5Packet }': 'tools/discipline/lib/step5-schema.ts' },
+  )
+
+  // The whole point of a versioned contract: the new one is enforced, the old one is not.
+  it('a complete v2 ready packet passes, an incomplete one fails closed, and legacy only warns', () => {
+    const out = readCases({
+      complete: V2_PACKET,
+      draft: V2_PACKET.replace('status: ready', 'status: draft'),
+      missingSection: V2_PACKET.replace('## Deployment Compatibility\n- No migration; the slice is additive.\n\n', ''),
+      legacy: V2_BODY,
+    })
+    expect(out.complete.errors).toEqual([])
+    expect(out.complete.enforced).toBe(true)
+    // A draft is what Step 4 is still filling in: refusing it would stop the step that fixes it.
+    expect(out.draft.enforced).toBe(false)
+    expect(out.draft.errors).toEqual([])
+    expect(out.missingSection.errors.join('; ')).toMatch(/missing the "Deployment Compatibility" section/)
+    expect(out.legacy.format).toBe('legacy')
+    expect(out.legacy.errors).toEqual([])
+    expect(out.legacy.warnings.join('; ')).toMatch(/legacy Step 5 packet/)
+  }, 60000)
+
+  // The tables are the part a packet is most likely to fake.
+  it('tables are checked by column, by cell, by unique id and by negative control', () => {
+    const out = readCases({
+      missingColumn: V2_PACKET
+        .replace('| ID | Setup | Action | Observable result | Negative control |', '| ID | Setup | Action | Observable result |')
+        .replace('|---|---|---|---|---|\n| AC1', '|---|---|---|---|\n| AC1'),
+      emptyCell: V2_PACKET.replace('| AC2 | one item | tick it | it renders as done | untick it and it renders as pending |', '| AC2 | one item | tick it | it renders as done | TBD |'),
+      noControl: V2_PACKET.replace('| AC2 | one item | tick it | it renders as done | untick it and it renders as pending |', '| AC2 | one item | tick it | it renders as done | none |'),
+      duplicateId: V2_PACKET.replace('| AC2 | one item', '| AC1 | one item'),
+      emptyStatesTable: V2_PACKET.replace('| empty | first open | none | empty list | add an item |\n| loaded | items exist | none | the items | reload |\n', ''),
+    })
+    expect(out.missingColumn.errors.join('; ')).toMatch(/missing the column\(s\): negative control/)
+    expect(out.emptyCell.errors.join('; ')).toMatch(/row 2 leaves negative control empty/)
+    // "none" is an answer for an effect and an evasion for a negative control.
+    expect(out.noControl.errors.join('; ')).toMatch(/row 2 has no negative control/)
+    expect(out.duplicateId.errors.join('; ')).toMatch(/"ac1" appears 2 times/)
+    expect(out.emptyStatesTable.errors.join('; ')).toMatch(/"Reachable States" table has a header and no rows/)
+  }, 60000)
+
+  // What proves a slice could have failed is a DECLARATION, not a tone of voice.
+  it('falsifiability and APPLIES: no are declarations, and both must be checkable', () => {
+    const out = readCases({
+      noMethod: V2_PACKET.replace('- METHOD: red-evidence\n', ''),
+      unknownMethod: V2_PACKET.replace('- METHOD: red-evidence', '- METHOD: vibes'),
+      noEvidence: V2_PACKET.replace('- AC1 failed against the previous build: the empty state was never rendered.\n', ''),
+      mutation: V2_PACKET.replace('- METHOD: red-evidence', '- METHOD: mutation'),
+      weakRationale: V2_PACKET.replace('- RATIONALE: the slice only reads the local store, so no provider call is added.', '- RATIONALE: n/a'),
+    })
+    expect(out.noMethod.errors.join('; ')).toMatch(/"Falsifiability" declares no METHOD/)
+    expect(out.unknownMethod.errors.join('; ')).toMatch(/METHOD is "vibes"/)
+    expect(out.noEvidence.errors.join('; ')).toMatch(/declares METHOD: red-evidence and shows nothing/)
+    expect(out.mutation.errors).toEqual([])
+    expect(out.weakRationale.errors.join('; ')).toMatch(/"Provider Impact" declares APPLIES: no without a checkable RATIONALE/)
+  }, 60000)
+
+  // The frontmatter carries the machine-readable half of the contract.
+  it('the frontmatter is validated, including surfaces, gates and the id', () => {
+    const out = readCases({
+      badSurface: V2_PACKET.replace('  - ui', '  - frontend'),
+      noGates: V2_PACKET.replace('required_gates:\n  - gate\n', 'required_gates: []\n'),
+      idDisagrees: V2_PACKET.replace('id: step5:13:20260810T120000', 'id: step5:99:20260810T120000'),
+      composite: V2_PACKET.replace('id: step5:13:20260810T120000', 'id: step5:S13:20260810T120000'),
+    })
+    expect(out.badSurface.errors.join('; ')).toMatch(/affected_surfaces\/0 must be equal to one of the allowed values/)
+    expect(out.noGates.errors.join('; ')).toMatch(/required_gates must NOT have fewer than 1 items/)
+    expect(out.idDisagrees.errors.join('; ')).toMatch(/id names slice "99" and slice: says "13"/)
+    // `S13` and `13` are the same slice, so an id written either way agrees with the packet.
+    expect(out.composite.errors).toEqual([])
+  }, 60000)
+
+  // Assembly is the one door every Step 5 handoff goes through.
+  it('assemble refuses a broken v2 ready packet and still serves a legacy one', () => {
+    const broken = createDisciplineProject({ 'STEP_5_SLICE_PACKET_13.md': V2_PACKET.replace('- METHOD: red-evidence\n', '') })
+    fs.writeFileSync(path.join(broken, 'task_plan.md'), PLAN, 'utf8')
+    const refused = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--slice', '13', '--project-dir', broken])
+    expect(refused.status, getOutput(refused)).not.toBe(0)
+    expect(getOutput(refused)).toMatch(/declares the v2 contract with status: ready and does not meet it/)
+    const pasteReady = path.join(broken, '.discipline', 'paste-ready')
+    expect(fs.existsSync(pasteReady) ? fs.readdirSync(pasteReady).filter((f) => f.endsWith('.md')) : []).toEqual([])
+
+    // A legacy packet keeps working, with a warning. That is what "v1 advisory" has to mean.
+    const legacy = createDisciplineProject({ 'STEP_5_SLICE_PACKET_13.md': V2_BODY })
+    fs.writeFileSync(path.join(legacy, 'task_plan.md'), PLAN, 'utf8')
+    const served = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--slice', '13', '--project-dir', legacy])
+    expect(served.status, getOutput(served)).toBe(0)
+    expect(getOutput(served)).toMatch(/legacy Step 5 packet/)
+
+    const good = createDisciplineProject({ 'STEP_5_SLICE_PACKET_13.md': V2_PACKET })
+    fs.writeFileSync(path.join(good, 'task_plan.md'), PLAN, 'utf8')
+    expect(runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--slice', '13', '--project-dir', good]).status).toBe(0)
+  }, 90000)
+
+// The suffixed name is the CANONICAL one since Fase 1, so it cannot be the less-checked one.
+  // A v2 packet that said `ready` and met none of its contract passed validate in silence.
+  it('discipline:validate checks the packet under its canonical suffixed name', () => {
+    const project = (packet: string) => {
+      const dir = createDisciplineProject({ 'STEP_5_SLICE_PACKET_13.md': packet })
+      fs.writeFileSync(path.join(dir, 'task_plan.md'), PLAN, 'utf8')
+      return dir
+    }
+
+    const broken = project(V2_PACKET.replace('- METHOD: red-evidence\n', ''))
+    const refused = runTsx('tools/discipline/validate-discipline.ts', ['--project-dir', broken])
+    expect(refused.status, getOutput(refused)).not.toBe(0)
+    expect(getOutput(refused)).toMatch(/"Falsifiability" declares no METHOD/)
+
+    const complete = project(V2_PACKET)
+    const accepted = runTsx('tools/discipline/validate-discipline.ts', ['--project-dir', complete])
+    expect(accepted.status, getOutput(accepted)).toBe(0)
+
+    const legacy = project(V2_BODY)
+    const warned = runTsx('tools/discipline/validate-discipline.ts', ['--project-dir', legacy])
+    expect(warned.status, getOutput(warned)).toBe(0)
+    expect(getOutput(warned)).toMatch(/legacy Step 5 packet/)
+  }, 90000)
+
+  // Migration says what it would do and touches nothing until asked; the original is kept with its hash.
+  it('migrate-packets: dry-run writes nothing, --write keeps the original and its hash, and is idempotent', () => {
+    const legacyPacket = ['# STEP_5_SLICE_PACKET', '', 'STATUS: ready', 'SLICE: 13', '', '## Goal', '- x', '## Scope', '- x', '## Contracts', '- x', '## Acceptance criteria', '- x', ''].join('\n')
+    const projectRoot = createDisciplineProject({ 'STEP_5_SLICE_PACKET.md': legacyPacket })
+    const packets = path.join(projectRoot, '.discipline', 'packets')
+    const migrate = (args: string[] = []) => runTsx('tools/discipline/migrate-packets.ts', ['--project-dir', projectRoot, '--stamp', '20260810T120000', ...args])
+
+    const dry = migrate()
+    expect(dry.status, getOutput(dry)).toBe(0)
+    expect(getOutput(dry)).toMatch(/would migrate to STEP_5_SLICE_PACKET_13\.md \(slice 13, status: draft\)/)
+    expect(fs.readdirSync(packets), 'a dry run writes nothing at all').toEqual(['STEP_5_SLICE_PACKET.md'])
+
+    const written = migrate(['--write'])
+    expect(written.status, getOutput(written)).toBe(0)
+    const after = fs.readdirSync(packets).sort()
+    expect(after).toEqual(['STEP_5_SLICE_PACKET_13.md', 'legacy'])
+
+    const backup = path.join(packets, 'legacy', 'STEP_5_SLICE_PACKET.13.md')
+    expect(fs.readFileSync(backup, 'utf8')).toBe(legacyPacket)
+    const digest = createHash('sha256').update(fs.readFileSync(backup)).digest('hex')
+    expect(fs.readFileSync(backup + '.sha256', 'utf8')).toMatch(new RegExp('^' + digest + '  STEP_5_SLICE_PACKET\\.md$', 'm'))
+
+    const migrated = fs.readFileSync(path.join(packets, 'STEP_5_SLICE_PACKET_13.md'), 'utf8')
+    expect(migrated).toMatch(/^---\nschema: discipline\.packet\.step5\nversion: 2\.0\.0\nid: step5:13:20260810T120000\nstatus: draft\nslice: 13\n/)
+    expect(migrated, 'no surface is invented for the operator').toMatch(/# REQUIRED: declare what this slice touches/)
+
+    const again = migrate(['--write'])
+    expect(again.status, getOutput(again)).toBe(0)
+    expect(getOutput(again)).toMatch(/already v2/)
+    expect(fs.readdirSync(packets).sort()).toEqual(after)
+    expect(fs.readFileSync(path.join(packets, 'STEP_5_SLICE_PACKET_13.md'), 'utf8')).toBe(migrated)
+  }, 90000)
+
+  // Ambiguity is refused, never guessed, and nothing is ever overwritten.
+  it('migrate-packets: refuses an ambiguous packet, a contradictory one and a collision', () => {
+    const cases: Array<[string, RegExp]> = [
+      [['# STEP_5_SLICE_PACKET', '', '## Goal', '- x', ''].join('\n'), /it names no slice/],
+      [['# STEP_5_SLICE_PACKET', '', 'SLICE: 13', 'SLICE: 14', ''].join('\n'), /Contradictory slice declarations/],
+    ]
+    for (const [content, pattern] of cases) {
+      const projectRoot = createDisciplineProject({ 'STEP_5_SLICE_PACKET.md': content })
+      const res = runTsx('tools/discipline/migrate-packets.ts', ['--project-dir', projectRoot, '--write', '--stamp', 's'])
+      expect(res.status, getOutput(res)).not.toBe(0)
+      expect(getOutput(res)).toMatch(pattern)
+      expect(fs.readdirSync(path.join(projectRoot, '.discipline', 'packets')), 'a refusal writes nothing').toEqual(['STEP_5_SLICE_PACKET.md'])
+    }
+
+    const collision = createDisciplineProject({
+      'STEP_5_SLICE_PACKET.md': ['# STEP_5_SLICE_PACKET', '', 'SLICE: 13', '', '## Goal', '- legacy', ''].join('\n'),
+      'STEP_5_SLICE_PACKET_13.md': ['# STEP_5_SLICE_PACKET', '', 'SLICE: 13', '', '## Goal', '- the one already there', ''].join('\n'),
+    })
+    const res = runTsx('tools/discipline/migrate-packets.ts', ['--project-dir', collision, '--write', '--stamp', 's'])
+    expect(res.status, getOutput(res)).not.toBe(0)
+    expect(getOutput(res)).toMatch(/STEP_5_SLICE_PACKET_13\.md already exists; nothing is overwritten/)
+    expect(fs.readFileSync(path.join(collision, '.discipline', 'packets', 'STEP_5_SLICE_PACKET_13.md'), 'utf8')).toMatch(/the one already there/)
+  }, 90000)
+
+  // `ready` is earned, not carried over.
+  it('migrate-packets: keeps ready only when the migrated packet would meet v2', () => {
+    const v1Frontmatter = ['---', 'schema: discipline.packet.step5', 'version: 1.0.0', 'id: legacy-13', 'status: ready',
+      'slice: 13', 'affected_surfaces:', '  - ui', 'required_gates:', '  - gate', '---', ''].join('\n')
+    const complete = createDisciplineProject({ 'STEP_5_SLICE_PACKET.md': v1Frontmatter + V2_BODY })
+    fs.writeFileSync(path.join(complete, 'task_plan.md'), PLAN, 'utf8')
+    const kept = runTsx('tools/discipline/migrate-packets.ts', ['--project-dir', complete, '--write', '--stamp', 'T1'])
+    expect(kept.status, getOutput(kept)).toBe(0)
+    const migrated = fs.readFileSync(path.join(complete, '.discipline', 'packets', 'STEP_5_SLICE_PACKET_13.md'), 'utf8')
+    expect(migrated).toMatch(/^---\nschema: discipline\.packet\.step5\nversion: 2\.0\.0\nid: step5:13:T1\nstatus: ready\n/)
+    expect(migrated, 'the surfaces it already declared are carried over').toMatch(/affected_surfaces:\n {2}- ui\n/)
+    expect(runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--slice', '13', '--project-dir', complete]).status).toBe(0)
+
+    // The same body with no frontmatter: every section is there, but nothing says which surfaces
+    // the slice touches, and the migration will not invent them.
+    const noSurfaces = createDisciplineProject({ 'STEP_5_SLICE_PACKET.md': V2_BODY })
+    fs.writeFileSync(path.join(noSurfaces, 'task_plan.md'), PLAN, 'utf8')
+    const drafted = runTsx('tools/discipline/migrate-packets.ts', ['--project-dir', noSurfaces, '--write', '--stamp', 'T1'])
+    expect(drafted.status, getOutput(drafted)).toBe(0)
+    expect(getOutput(drafted)).toMatch(/lands as draft: 1 v2 requirement\(s\) unmet/)
+    expect(fs.readFileSync(path.join(noSurfaces, '.discipline', 'packets', 'STEP_5_SLICE_PACKET_13.md'), 'utf8')).toMatch(/status: draft\n/)
+  }, 90000)
 })
