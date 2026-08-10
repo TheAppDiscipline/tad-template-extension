@@ -2936,6 +2936,84 @@ describe('Step 5 packet schema v2 + migration', () => {
     }
   }, 120000)
 
+  // A heading is not a failing run and a horizontal rule has never falsified anything. The evidence
+  // filter took any non-evasive line, so typing some structure under METHOD satisfied the section.
+  it('markdown structure is not evidence', () => {
+    const evidence = (replacement: string) => V2_PACKET.replace('- AC1 failed against the previous build: the empty state was never rendered.', replacement)
+    const gut = (packet: string, section: string, replacement: string) =>
+      packet.replace(new RegExp('## ' + section + '\\n[^#]*', 'm'), '## ' + section + '\n' + replacement + '\n\n')
+    const out = readCases({
+      headingEvidence: evidence('### Evidence'),
+      ruleEvidence: evidence('---'),
+      quotedNone: evidence('> none'),
+      quotedBoldNone: evidence('> - **none**'),
+      quotedHeading: evidence('> ### Evidence'),
+      ruleSection: gut(V2_PACKET, 'Goal', '---'),
+      quotedNoneSection: gut(V2_PACKET, 'Contracts', '> n/a'),
+      // A quoted sentence IS evidence: the marker is formatting, the words are the answer.
+      quotedRealEvidence: evidence('> AC1 failed against the previous build: the empty state was never rendered.'),
+    })
+    for (const name of ['headingEvidence', 'ruleEvidence', 'quotedNone', 'quotedBoldNone', 'quotedHeading']) {
+      expect(out[name].errors.join('; '), name).toMatch(/declares METHOD: red-evidence and shows nothing/)
+    }
+    expect(out.ruleSection.errors.join('; ')).toMatch(/"Goal" is empty/)
+    expect(out.quotedNoneSection.errors.join('; ')).toMatch(/"Contracts" is empty/)
+    expect(out.quotedRealEvidence.errors).toEqual([])
+  }, 60000)
+
+  // The last step deletes the source. A delete that succeeds and THEN throws left the packet gone
+  // while the rollback removed the backup holding its only other copy, and reported a clean undo.
+  it('migrate-packets: a failure while removing the source puts the source back', () => {
+    const legacyPacket = ['# STEP_5_SLICE_PACKET', '', 'SLICE: 13', '', '## Goal', '- x', ''].join('\n')
+    const tree = (dir: string) => {
+      const packets = path.join(dir, '.discipline', 'packets')
+      const legacy = path.join(packets, 'legacy')
+      return Object.fromEntries([
+        ...fs.readdirSync(packets).filter((f) => f.endsWith('.md')).sort().map((f) => [f, fs.readFileSync(path.join(packets, f), 'utf8')]),
+        ...(fs.existsSync(legacy) ? fs.readdirSync(legacy).sort().map((f) => ['legacy/' + f, fs.readFileSync(path.join(legacy, f), 'utf8')]) : []),
+      ])
+    }
+    const failingRemove = (poisonWrites: string) => [
+      "const fs = await import('node:fs')",
+      'let poisoned = false',
+      'const ops = {',
+      '  write: (file, data, exclusive) => {',
+      `    if (poisoned && ${poisonWrites}) throw new Error('simulated: the restore failed too')`,
+      "    fs.writeFileSync(file, data, exclusive ? { flag: 'wx' } : {})",
+      '  },',
+      '  remove: (file) => {',
+      '    fs.rmSync(file)',
+      "    if (file.endsWith('STEP_5_SLICE_PACKET.md')) { poisoned = true; throw new Error('simulated failure after removing the source') }",
+      '  },',
+      '}',
+    ]
+
+    const restored = createDisciplineProject({ 'STEP_5_SLICE_PACKET.md': legacyPacket })
+    const before = tree(restored)
+    const out = runTsxModule(
+      ['const __out = {}', ...failingRemove('false'), `__out.result = migratePackets(${JSON.stringify(restored)}, { write: true, stamp: 'T' }, ops)`],
+      { '{ migratePackets }': 'tools/discipline/migrate-packets.ts' },
+    )
+    expect(out.result.ok).toBe(false)
+    expect(out.result.plans[0].reason).toMatch(/simulated failure after removing the source/)
+    expect(out.result.plans[0].reason).toMatch(/Nothing was left behind/)
+    expect(out.result.plans[0].rollback).toBe('complete')
+    expect(tree(restored), 'the tree must be byte-identical to what it was').toEqual(before)
+
+    // When the restore fails too, the command must SAY the rollback is incomplete: a false
+    // "nothing was left behind" is worse than the loss, because it stops anybody going to look.
+    const lost = createDisciplineProject({ 'STEP_5_SLICE_PACKET.md': legacyPacket })
+    const worse = runTsxModule(
+      ['const __out = {}', ...failingRemove('true'), `__out.result = migratePackets(${JSON.stringify(lost)}, { write: true, stamp: 'T' }, ops)`],
+      { '{ migratePackets }': 'tools/discipline/migrate-packets.ts' },
+    )
+    expect(worse.result.ok).toBe(false)
+    expect(worse.result.plans[0].rollback).toBe('incomplete')
+    expect(worse.result.plans[0].reason).toMatch(/ROLLBACK INCOMPLETE/)
+    expect(worse.result.plans[0].reason).toMatch(/could not restore STEP_5_SLICE_PACKET\.md/)
+    expect(worse.result.plans[0].reason).not.toMatch(/Nothing was left behind/)
+  }, 120000)
+
   // Migration says what it would do and touches nothing until asked; the original is kept with its hash.
   it('migrate-packets: dry-run writes nothing, --write keeps the original and its hash, and is idempotent', () => {
     const legacyPacket = ['# STEP_5_SLICE_PACKET', '', 'STATUS: ready', 'SLICE: 13', '', '## Goal', '- x', '## Scope', '- x', '## Contracts', '- x', '## Acceptance criteria', '- x', ''].join('\n')
