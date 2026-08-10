@@ -2676,7 +2676,7 @@ describe('Step 5 packet schema v2 + migration', () => {
       malformed: V2_PACKET.replace('version: 2.0.0', 'version: banana'),
       missing: V2_PACKET.replace('version: 2.0.0\n', ''),
       v1: V2_PACKET.replace('version: 2.0.0', 'version: 1.4.0'),
-      v2Minor: V2_PACKET.replace('version: 2.0.0', 'version: 2.1'),
+      v2Minor: V2_PACKET.replace('version: 2.0.0', 'version: "2.1"'),
     })
     for (const name of ['future', 'futureDraft', 'malformed', 'missing']) {
       expect(out[name].format, JSON.stringify(out[name])).toBe('unsupported')
@@ -2755,6 +2755,90 @@ describe('Step 5 packet schema v2 + migration', () => {
     expect(res.status, getOutput(res)).not.toBe(0)
     expect(getOutput(res)).toMatch(/REFUSED.*cannot read/)
     expect(fs.readdirSync(path.join(projectRoot, '.discipline', 'packets'))).toEqual(['STEP_5_SLICE_PACKET.md'])
+  }, 90000)
+
+  // Frontmatter that OPENED and could not be read is not "no frontmatter": a packet whose YAML does
+  // not parse might be declaring v2 and failing every rule in it, and nobody can tell.
+  it('unreadable frontmatter and a malformed 2.x version are refused, not demoted', () => {
+    const out = readCases({
+      unterminated: V2_PACKET.replace('---\n# STEP_5_SLICE_PACKET', '# STEP_5_SLICE_PACKET'),
+      badYaml: V2_PACKET.replace('slice: 13', 'slice: [13'),
+      notAMapping: ['---', '- just', '- a list', '---', '', '# STEP_5_SLICE_PACKET', '', '## Goal', '- x', ''].join('\n'),
+      trailingDot: V2_PACKET.replace('version: 2.0.0', 'version: 2.'),
+      badPatch: V2_PACKET.replace('version: 2.0.0', 'version: 2.bad'),
+      badThird: V2_PACKET.replace('version: 2.0.0', 'version: 2.0.bad'),
+      // The same malformed version as a DRAFT: a version nobody can read fails with any status.
+      badPatchDraft: V2_PACKET.replace('version: 2.0.0', 'version: 2.bad').replace('status: ready', 'status: draft'),
+      bare: V2_PACKET.replace('version: 2.0.0', 'version: "2"'),
+      prerelease: V2_PACKET.replace('version: 2.0.0', 'version: 2.0.0-rc.1'),
+      noFrontmatter: V2_BODY,
+    })
+    for (const name of ['unterminated', 'badYaml', 'notAMapping', 'trailingDot', 'badPatch', 'badThird', 'badPatchDraft']) {
+      expect(out[name].format, name + ': ' + JSON.stringify(out[name])).toBe('unsupported')
+      expect(out[name].errors.length, name + ' must be refused, whatever its status says').toBeGreaterThan(0)
+    }
+    expect(out.unterminated.errors.join('; ')).toMatch(/frontmatter that cannot be read/)
+    expect(out.badPatch.errors.join('; ')).toMatch(/version "2\.bad", which this tooling cannot read/)
+    // YAML turns `2.` into the number 2, so the version has to be a string, like the schema says.
+    expect(out.trailingDot.errors.join('; ')).toMatch(/as a YAML number, not a version string/)
+    expect(out.bare.format).toBe('v2')
+    expect(out.prerelease.format).toBe('v2')
+    expect(out.noFrontmatter.format).toBe('legacy')
+    expect(out.noFrontmatter.errors).toEqual([])
+  }, 60000)
+
+  // `APPLIES: no` was accepted before the content check ran, and the rationale was only demanded of
+  // the sections v2 added. So Goal, Scope and Contracts could opt out of themselves.
+  it('Goal, Scope and Contracts cannot opt out of being the slice', () => {
+    const gut = (packet: string, section: string, replacement: string) =>
+      packet.replace(new RegExp('## ' + section + '\\n[^#]*', 'm'), '## ' + section + '\n' + replacement + '\n\n')
+    let optedOut = V2_PACKET
+    for (const section of ['Goal', 'Scope', 'Contracts']) optedOut = gut(optedOut, section, '- APPLIES: no')
+
+    const out = readCases({
+      optedOut,
+      optedOutWithReason: gut(V2_PACKET, 'Goal', '- APPLIES: no\n- RATIONALE: this slice is pure refactoring with no user-visible goal.'),
+      justNone: gut(V2_PACKET, 'Goal', '- none'),
+      justNotApplicable: gut(V2_PACKET, 'Contracts', '- Not applicable.'),
+      justNil: gut(V2_PACKET, 'Files to touch', '- nil'),
+      optionalNoReason: gut(V2_PACKET, 'Deployment Compatibility', '- APPLIES: no'),
+      optionalWithReason: gut(V2_PACKET, 'Deployment Compatibility', '- APPLIES: no\n- RATIONALE: the slice ships no artifact and needs no migration.'),
+    })
+    const opted = out.optedOut.errors.join('; ')
+    for (const section of ['Goal', 'Scope', 'Contracts']) {
+      expect(opted, section + ' must not be allowed to opt out').toMatch(new RegExp('"' + section + '" declares APPLIES: no'))
+    }
+    // A rationale does not buy it either: these three sections are what a slice IS.
+    expect(out.optedOutWithReason.errors.join('; ')).toMatch(/"Goal" declares APPLIES: no/)
+    expect(out.justNone.errors.join('; ')).toMatch(/"Goal" is empty/)
+    expect(out.justNotApplicable.errors.join('; ')).toMatch(/"Contracts" is empty/)
+    expect(out.justNil.errors.join('; ')).toMatch(/"Files to touch" is empty/)
+    expect(out.optionalNoReason.errors.join('; ')).toMatch(/"Deployment Compatibility" declares APPLIES: no without a checkable RATIONALE/)
+    expect(out.optionalWithReason.errors).toEqual([])
+  }, 60000)
+
+  // `--allow-draft` is named for drafts. `consumed` and `superseded` mean that slice is over.
+  it('--allow-draft covers exactly draft, not every non-ready status', () => {
+    const project = (status: string) => {
+      const dir = createDisciplineProject({ 'STEP_5_SLICE_PACKET_13.md': V2_PACKET.replace('status: ready', 'status: ' + status) })
+      fs.writeFileSync(path.join(dir, 'task_plan.md'), PLAN, 'utf8')
+      return dir
+    }
+    const assemble = (dir: string, args: string[] = []) =>
+      runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--slice', '13', '--project-dir', dir, ...args])
+
+    for (const status of ['consumed', 'superseded']) {
+      const dir = project(status)
+      expect(assemble(dir).status, 'a closed slice is not a handoff').not.toBe(0)
+      const stillRefused = assemble(dir, ['--allow-draft'])
+      expect(stillRefused.status, getOutput(stillRefused)).not.toBe(0)
+      expect(getOutput(stillRefused)).toMatch(new RegExp('--allow-draft does not cover "' + status + '"'))
+      expect(fs.readdirSync(path.join(dir, '.discipline', 'paste-ready')).filter((f) => f.endsWith('.md'))).toEqual([])
+    }
+
+    const draft = project('draft')
+    expect(assemble(draft).status).not.toBe(0)
+    expect(assemble(draft, ['--allow-draft']).status).toBe(0)
   }, 90000)
 
   // Migration says what it would do and touches nothing until asked; the original is kept with its hash.
