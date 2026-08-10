@@ -8,12 +8,18 @@
     "ignored, it makes the FULL gate run, so the cost of an out-of-date map is time, never a missed check.",
     "Scripts are npm script names and must exist in package.json. Every surface needs an entry, even an",
     "empty one, because a surface nobody mentions is a gate nobody runs.",
-    "This lane ships no migrations, so `schema` maps to no path: it only ever arrives declared."
+    "This lane ships no migrations, so `schema` maps to no path: it only ever arrives declared.",
+    "A surface MAY name a gate that `npm run gate` does not run (gate:visual). That is the point:",
+    "`npm run gate` cannot demand browser verification of every project, and this map only demands it",
+    "of a change that touched the UI. It needs the browsers installed (npm run e2e:install); a project",
+    "that does not verify UI in a browser takes gate:visual out of this file, deliberately, instead of",
+    "finding out it never ran. There is no test:rls here: the backend lives in a sidecar web app,",
+    "and that repo's own map owns its authenticated checks."
   ],
   "base": ["discipline:provider:check"],
   "surfaces": {
-    "ui": ["lint", "compile", "test", "check-tokens"],
-    "authenticated-ui": ["lint", "compile", "test", "check-tokens", "check-secrets", "check-queries"],
+    "ui": ["lint", "compile", "test", "check-tokens", "gate:visual"],
+    "authenticated-ui": ["lint", "compile", "test", "check-tokens", "check-secrets", "check-queries", "gate:visual"],
     "backend": ["lint", "compile", "test", "check-secrets", "check-https", "check-queries"],
     "schema": ["test", "check-db-types"],
     "permissions": ["test", "check-secrets", "build", "check-manifest"],
@@ -34,7 +40,10 @@
     },
     {
       "surface": "backend",
-      "prefixes": ["entrypoints/background", "src/lib/backend/", "src/lib/messaging.ts", "src/lib/storage.ts"],
+      "prefixes": [
+        "entrypoints/background", "src/lib/backend/", "src/lib/messaging.ts", "src/lib/storage.ts",
+        "api/", "server/", "functions/"
+      ],
       "extensions": []
     },
     {
@@ -49,7 +58,10 @@
     },
     {
       "surface": "deployment-artifact",
-      "prefixes": [".github/workflows/", "wxt.config.ts", "vitest.config.ts", "public/manifest"],
+      "prefixes": [
+        ".github/workflows/", "wxt.config.ts", "vitest.config.ts", "public/manifest",
+        "api/", "server/", "functions/"
+      ],
       "extensions": []
     },
     {

@@ -490,8 +490,9 @@ describe('Phase-1 control plane: policy hooks, stop gate, session header, checkp
   it('stop-gate: allows when clean; allows when stop_hook_active; blocks dirty+failed; allows dirty+fresh-pass', async () => {
     const { decideCore, parsePorcelainModified } = await importHook('stop-gate.mjs')
 
-    // Untracked-only porcelain is not "edited code".
-    expect(parsePorcelainModified('?? new.txt\n M src/a.ts\n')).toEqual(['src/a.ts'])
+    // An untracked file IS edited code. It used to be dropped, and a file created after the gate
+    // could then end the session unverified. Only git-ignored entries are dropped now.
+    expect(parsePorcelainModified('?? new.txt\n M src/a.ts\n!! dist/x.js\n')).toEqual(['new.txt', 'src/a.ts'])
 
     // Clean tree -> allow.
     expect(decideCore({ stopHookActive: false, modifiedFiles: [], gateReport: null, newestModifiedMtimeMs: 0 }).block).toBe(false)
@@ -939,7 +940,7 @@ describe('Phase-2 adapters + run reconciler', () => {
 
   // --- 7.6 run --dry-run + precondition refusals in a temp fixture repo --------
 
-  function makeRunFixtureRepo(overrides: { level?: number; withSlicePacket?: boolean } = {}): string {
+  function makeRunFixtureRepo(overrides: { level?: number; withSlicePacket?: boolean; withGatesMap?: boolean } = {}): string {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'discipline-run-'))
     const git = (a: string[]) => spawnSync('git', a, { cwd: repo, encoding: 'utf8' })
     git(['init', '-q'])
@@ -978,6 +979,26 @@ describe('Phase-2 adapters + run reconciler', () => {
       JSON.stringify({ name: 'e2e', private: true, version: '1.0.0', type: 'module', scripts: { gate: 'node -e "process.exit(0)"' } }, null, 2),
       'utf8',
     )
+    // The runner scopes its gate to what changed, and refuses to close a slice when it cannot. This
+    // map is the minimum that says "everything runs the whole gate", which is what this fixture used
+    // to get for free. `withGatesMap: false` reproduces a project that never wrote one.
+    if (overrides.withGatesMap !== false) {
+      fs.writeFileSync(
+        path.join(repo, '.discipline', 'gates.json'),
+        JSON.stringify({
+          schema: 'discipline.gates.v1',
+          base: [],
+          surfaces: {
+            ui: ['gate'], 'authenticated-ui': ['gate'], backend: ['gate'], schema: ['gate'],
+            permissions: ['gate'], 'deployment-artifact': ['gate'], ai: ['gate'], 'docs-only': ['gate'],
+          },
+          rules: [{ surface: 'docs-only', prefixes: [], extensions: ['.md'] }],
+          exclude: [],
+          unmapped: 'gate',
+        }, null, 2),
+        'utf8',
+      )
+    }
     git(['add', '-A'])
     git(['commit', '-q', '-m', 'baseline'])
     return repo
@@ -1109,7 +1130,7 @@ describe('Phase-2 adapters + run reconciler', () => {
     // itself, and the incomplete() helper used to write a second one; the ledger is what the crash
     // check and the Repair Budget read, so a run that "ended" twice is a run they cannot trust.
     const ledgerDir = path.join(repo, '.discipline', 'ledger')
-    const ledger = fs.readFileSync(path.join(ledgerDir, fs.readdirSync(ledgerDir)[0]), 'utf8')
+    const ledger = fs.readFileSync(path.join(ledgerDir, fs.readdirSync(ledgerDir)[0]!), 'utf8')
     expect((ledger.match(/run_finished/g) || []).length, ledger).toBe(1)
     fs.rmSync(repo, { recursive: true, force: true })
   }, 120000)
@@ -1123,7 +1144,7 @@ describe('Phase-2 adapters + run reconciler', () => {
     const plan = (current: string, next: string) => ['# task_plan.md', '', '## 4) Ready Slices', '',
       `## Slice ${current} - first`, '#### Goal', 'x', '', `## Slice ${next} - second`, '#### Goal', 'y', ''].join('\n')
 
-    for (const [current, next] of [['S27E2b', 'S27E2c'], ['13.2', '13.3'], ['S27E2b', 'S27E10a']]) {
+    for (const [current, next] of [['S27E2b', 'S27E2c'], ['13.2', '13.3'], ['S27E2b', 'S27E10a']] as [string, string][]) {
       const projectRoot = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': closing(current) })
       fs.writeFileSync(path.join(projectRoot, 'task_plan.md'), plan(current, next), 'utf8')
       const res = runTsx('tools/discipline/update-progress.ts', ['--project-dir', projectRoot])
@@ -1438,6 +1459,37 @@ describe('Phase-2 adapters + run reconciler', () => {
     expect(packets.some((f) => f.startsWith('CHECKPOINT_')), 'no builder/checkpoint in advisory-only flow').toBe(false)
     fs.rmSync(repo, { recursive: true, force: true })
   })
+
+  // The runner used to fall back to the full gate when the map or git failed. Running everything
+  // looks safer and is not: the comparison between what the packet declared and what the diff touched
+  // is the guarantee the run closes its slice on, and a full gate cannot make it. A run that could
+  // not tell what changed must not close a slice.
+  it('run: a gate that cannot be scoped ends INCOMPLETE, it does not fall back to the full gate', () => {
+    const gitProbe = spawnSync('git', ['--version'], { encoding: 'utf8' })
+    if (gitProbe.status !== 0) return
+    const repo = makeRunFixtureRepo({ withGatesMap: false })
+    const before = fs.readFileSync(path.join(repo, 'progress.md'), 'utf8')
+
+    const res = spawnSync(process.execPath, [tsxCli, 'tools/discipline/run.ts', '--slice', '1', '--yes', '--no-open', '--project-dir', repo], {
+      cwd: repoRoot,
+      env: { ...process.env, DISCIPLINE_FAKE_PROVIDER_CMD: fakeCli, FAKE_MODE: 'build', FAKE_BUILD_DIR: repo },
+      encoding: 'utf8',
+    })
+    const out = getOutput(res)
+
+    expect(res.status, out).toBe(5)
+    expect(out).toMatch(/the gate could not be scoped to what changed/)
+    expect(out).toMatch(/gates\.json not found/)
+    expect(out).not.toMatch(/Gate is GREEN/)
+    expect(fs.readFileSync(path.join(repo, 'progress.md'), 'utf8'), 'the slice must not be closed').toBe(before)
+
+    // And no report is left behind claiming a pass: nothing was measured.
+    const reportPath = path.join(repo, '.discipline', 'gate-report.json')
+    if (fs.existsSync(reportPath)) {
+      expect(JSON.parse(fs.readFileSync(reportPath, 'utf8')).passed, 'a gate that never ran cannot report a pass').not.toBe(true)
+    }
+    fs.rmSync(repo, { recursive: true, force: true })
+  }, 120000)
 })
 
 // Mirrors the discipline:progress regression suite in tad-template-web
@@ -2698,7 +2750,7 @@ describe('Step 5 packet schema v2 + migration', () => {
       ['Goal', '## Goal\n\n'], ['Scope', '## Scope\n\n'], ['Contracts', '## Contracts\n\n'],
       ['Files to touch', '## Files to touch\n\n'], ['Deployment Compatibility', '## Deployment Compatibility\n\n'],
       ['Manual Verification', '## Manual Verification\n\n'], ['Estimate', '## Estimate\n'],
-    ]) hollow = hollow.replace(empty(section), keep)
+    ] as [string, string][]) hollow = hollow.replace(empty(section), keep)
 
     const out = readCases({
       hollow,
@@ -3339,8 +3391,8 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
   // matches nothing.
   it('an incomplete map is refused, never partially applied', () => {
     const good = JSON.stringify(FIXTURE_GATES)
-    const mutate = (fn: (config: Record<string, never>) => void) => {
-      const copy = JSON.parse(good)
+    const mutate = (fn: (config: Record<string, unknown>) => void) => {
+      const copy = JSON.parse(good) as Record<string, unknown>
       fn(copy)
       return JSON.stringify(copy)
     }
@@ -3349,12 +3401,12 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
         `const __out = {}`,
         `const scripts = new Set(${JSON.stringify(Object.keys(FIXTURE_SCRIPTS))})`,
         `const cases = ${JSON.stringify({
-          futureSchema: mutate((c) => { (c as Record<string, unknown>).schema = 'discipline.gates.v2' }),
-          missingSurface: mutate((c) => { delete (c as Record<string, Record<string, unknown>>).surfaces.ai }),
-          unknownSurface: mutate((c) => { (c as Record<string, Record<string, unknown>>).surfaces.frontend = ['lint'] }),
-          missingScript: mutate((c) => { (c as Record<string, Record<string, unknown>>).surfaces.ui = ['lint', 'check-nothing'] }),
-          emptyRule: mutate((c) => { (c as Record<string, unknown[]>).rules.push({ surface: 'ui', prefixes: [], extensions: [] }) }),
-          noRules: mutate((c) => { (c as Record<string, unknown>).rules = [] }),
+          futureSchema: mutate((c) => { c.schema = 'discipline.gates.v2' }),
+          missingSurface: mutate((c) => { delete (c.surfaces as Record<string, unknown>).ai }),
+          unknownSurface: mutate((c) => { (c.surfaces as Record<string, unknown>).frontend = ['lint'] }),
+          missingScript: mutate((c) => { (c.surfaces as Record<string, unknown>).ui = ['lint', 'check-nothing'] }),
+          emptyRule: mutate((c) => { (c.rules as unknown[]).push({ surface: 'ui', prefixes: [], extensions: [] }) }),
+          noRules: mutate((c) => { c.rules = [] }),
           badJson: '{ not json',
           good,
         })}`,
@@ -3655,4 +3707,73 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
     expect(self.inference.excluded, '.discipline/gates.json must not be excluded from the gates it selects').toEqual([])
     expect(self.inference.unmapped, 'changing the map must run the full gate').toEqual(['.discipline/gates.json'])
   }, 60000)
+
+  // A map that only ever selects gates `npm run gate` already runs is a map that does nothing. These
+  // are the two buyer paths the surfaces exist for, checked against THIS lane's real map:
+  // `src/components/Button.tsx` inferred `ui` and selected no visual verification at all, and
+  // `api/items.ts` inferred only `backend`, so nothing checked the deployable artifact and a packet
+  // declaring neither surface could not be caught.
+  it('the buyer paths route to the gates this lane actually needs', () => {
+    const gates = JSON.parse(fs.readFileSync(path.join(repoRoot, '.discipline', 'gates.json'), 'utf8'))
+    const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'))
+    const out = runTsxModule(
+      [
+        `const __out = {}`,
+        `const config = parseGatesConfig(${JSON.stringify(JSON.stringify(gates))}, null)`,
+        `for (const [name, file] of Object.entries({ ui: 'src/components/Button.tsx', api: 'api/items.ts' })) {`,
+        `  const inference = inferSurfaces(config, [file])`,
+        `  __out[name] = { surfaces: inference.surfaces, unmapped: inference.unmapped, scripts: gatesForSurfaces(config, inference.surfaces) }`,
+        `}`,
+      ],
+      { '{ parseGatesConfig, inferSurfaces, gatesForSurfaces }': 'tools/discipline/lib/gates-config.ts' },
+    )
+
+    // A component is UI, and UI is verified as UI: `npm run gate` cannot demand that of every
+    // project, which is exactly why the surface has to.
+    expect(out.ui.surfaces).toEqual(['ui'])
+    expect(out.ui.unmapped).toEqual([])
+    expect(out.ui.scripts, `a UI change must run the visual verification: ${out.ui.scripts.join(', ')}`).toContain('gate:visual')
+
+    // An API route is the backend AND the thing that gets deployed. Inferring only `backend` left the
+    // artifact unchecked and made an undeclared `deployment-artifact` impossible to catch.
+    expect(out.api.surfaces).toEqual(['backend', 'deployment-artifact'])
+    expect(out.api.unmapped).toEqual([])
+    for (const script of gates.surfaces['deployment-artifact']) {
+      expect(out.api.scripts, `an API change must run ${script}`).toContain(script)
+    }
+
+    // Every gate either of them selects has to be a script that exists, or it is a check nobody runs.
+    for (const script of [...out.ui.scripts, ...out.api.scripts]) {
+      expect(pkg.scripts[script], `.discipline/gates.json selects "${script}", which package.json does not define`).toBeTruthy()
+    }
+  }, 60000)
+
+  // Untracked files used to be dropped as "not edited code". With a report scoped to changed files
+  // that became a hole: create `src/new-component.tsx` after the gate, and the green report that
+  // never saw it still ended the session.
+  it('a new untracked file the report never saw blocks the stop', async () => {
+    const { decide, parsePorcelainModified } = await importHook('stop-gate.mjs')
+    expect(parsePorcelainModified('?? src/new-component.tsx\n')).toEqual(['src/new-component.tsx'])
+    // Pipeline state is not edited code, and the gate report can never appear in its own file list:
+    // counting it would block every session forever.
+    expect(parsePorcelainModified('?? .discipline/gate-report.json\n M src/a.ts\n')).toEqual(['src/a.ts'])
+
+    const root = createGateProject({})
+    const reportPath = path.join(root, '.discipline', 'gate-report.json')
+    const writeReport = (files: string[]) =>
+      fs.writeFileSync(reportPath, JSON.stringify({ schema: 'discipline.gate_report.v2', passed: true, failed_checks: [], files }), 'utf8')
+
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'src', 'new-component.tsx'), 'export const New = () => null\n', 'utf8')
+    writeReport(['progress.md'])
+
+    const blocked = decide({ stop_hook_active: false }, root)
+    expect(blocked.block, 'a file created after the gate is not covered by it').toBe(true)
+    expect(blocked.reason).toMatch(/Not covered: src\/new-component\.tsx/)
+
+    // Covering that same file ends the session, so the rule is about coverage and not about newness.
+    writeReport(['progress.md', 'src/new-component.tsx'])
+    expect(decide({ stop_hook_active: false }, root).block).toBe(false)
+  }, 60000)
+
 })
