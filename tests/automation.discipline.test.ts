@@ -2616,11 +2616,21 @@ describe('Step 5 packet schema v2 + migration', () => {
     fs.writeFileSync(path.join(broken, 'task_plan.md'), PLAN, 'utf8')
     const refused = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--slice', '13', '--project-dir', broken])
     expect(refused.status, getOutput(refused)).not.toBe(0)
-    expect(getOutput(refused)).toMatch(/declares the v2 contract with status: ready and does not meet it/)
+    expect(getOutput(refused)).toMatch(/does not meet the contract it declares/)
     const pasteReady = path.join(broken, '.discipline', 'paste-ready')
     expect(fs.existsSync(pasteReady) ? fs.readdirSync(pasteReady).filter((f) => f.endsWith('.md')) : []).toEqual([])
 
     // A legacy packet keeps working, with a warning. That is what "v1 advisory" has to mean.
+    // A draft is refused for its STATUS: a paste-ready is the handoff an implementer builds from.
+    const drafted = createDisciplineProject({ 'STEP_5_SLICE_PACKET_13.md': V2_PACKET.replace('status: ready', 'status: draft') })
+    fs.writeFileSync(path.join(drafted, 'task_plan.md'), PLAN, 'utf8')
+    const draftRefused = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--slice', '13', '--project-dir', drafted])
+    expect(draftRefused.status, getOutput(draftRefused)).not.toBe(0)
+    expect(getOutput(draftRefused)).toMatch(/has status "draft", not "ready"/)
+    const inspected = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--slice', '13', '--allow-draft', '--project-dir', drafted])
+    expect(inspected.status, getOutput(inspected)).toBe(0)
+    expect(getOutput(inspected)).toMatch(/do not implement from it/)
+
     const legacy = createDisciplineProject({ 'STEP_5_SLICE_PACKET_13.md': V2_BODY })
     fs.writeFileSync(path.join(legacy, 'task_plan.md'), PLAN, 'utf8')
     const served = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--slice', '13', '--project-dir', legacy])
@@ -2654,6 +2664,97 @@ describe('Step 5 packet schema v2 + migration', () => {
     const warned = runTsx('tools/discipline/validate-discipline.ts', ['--project-dir', legacy])
     expect(warned.status, getOutput(warned)).toBe(0)
     expect(getOutput(warned)).toMatch(/legacy Step 5 packet/)
+  }, 90000)
+
+  // Three outcomes, not two. A packet that declares the versioned contract at a version this
+  // tooling cannot read is REFUSED, never quietly demoted to legacy: falling back would validate an
+  // explicit opt-in against no contract at all.
+  it('an unreadable version is refused, it does not fall back to legacy', () => {
+    const out = readCases({
+      future: V2_PACKET.replace('version: 2.0.0', 'version: 3.0.0'),
+      futureDraft: V2_PACKET.replace('version: 2.0.0', 'version: 3.0.0').replace('status: ready', 'status: draft'),
+      malformed: V2_PACKET.replace('version: 2.0.0', 'version: banana'),
+      missing: V2_PACKET.replace('version: 2.0.0\n', ''),
+      v1: V2_PACKET.replace('version: 2.0.0', 'version: 1.4.0'),
+      v2Minor: V2_PACKET.replace('version: 2.0.0', 'version: 2.1'),
+    })
+    for (const name of ['future', 'futureDraft', 'malformed', 'missing']) {
+      expect(out[name].format, JSON.stringify(out[name])).toBe('unsupported')
+      expect(out[name].errors.length, name + ' must be refused, not demoted').toBeGreaterThan(0)
+    }
+    expect(out.future.errors.join('; ')).toMatch(/version "3\.0\.0", which this tooling cannot read/)
+    expect(out.missing.errors.join('; ')).toMatch(/with no version/)
+    // v1 is a version this tooling KNOWS, and it stays advisory.
+    expect(out.v1.format).toBe('legacy')
+    expect(out.v1.errors).toEqual([])
+    expect(out.v2Minor.format).toBe('v2')
+  }, 60000)
+
+  // A heading is not an answer: a packet with twelve empty sections read as a complete v2 spec.
+  it('an empty required section is not a filled one', () => {
+    const empty = (section: string) => new RegExp('## ' + section + '\\n[^#]*', 'm')
+    let hollow = V2_PACKET
+    for (const [section, keep] of [
+      ['Goal', '## Goal\n\n'], ['Scope', '## Scope\n\n'], ['Contracts', '## Contracts\n\n'],
+      ['Files to touch', '## Files to touch\n\n'], ['Deployment Compatibility', '## Deployment Compatibility\n\n'],
+      ['Manual Verification', '## Manual Verification\n\n'], ['Estimate', '## Estimate\n'],
+    ]) hollow = hollow.replace(empty(section), keep)
+
+    const out = readCases({
+      hollow,
+      headingsOnly: V2_PACKET.replace(/## Scope\n[^#]*/m, '## Scope\n### IN\n### OUT\n\n'),
+      placeholder: V2_PACKET.replace('- Add the shopping list screen.', '- TBD'),
+      declaredNotApplicable: V2_PACKET.replace(/## Deployment Compatibility\n[^#]*/m, '## Deployment Compatibility\n- APPLIES: no\n- RATIONALE: the slice ships no artifact and needs no migration.\n\n'),
+    })
+    const hollowErrors = out.hollow.errors.join('; ')
+    for (const section of ['Goal', 'Scope', 'Contracts', 'Files to touch', 'Deployment Compatibility', 'Manual Verification', 'Estimate']) {
+      expect(hollowErrors, section + ' must be reported empty').toMatch(new RegExp('"' + section + '" is empty'))
+    }
+    expect(out.headingsOnly.errors.join('; ')).toMatch(/"Scope" is empty/)
+    expect(out.placeholder.errors.join('; ')).toMatch(/"Goal" is empty/)
+    expect(out.declaredNotApplicable.errors).toEqual([])
+  }, 60000)
+
+  // Fase 1 made `.consumed.md` history. A migration that matched the name pattern alone could turn
+  // a closed packet back into an active one: a format change reopening finished work.
+  it('migrate-packets: archived packets are history, in dry-run and in --write', () => {
+    const body = ['# STEP_5_SLICE_PACKET', '', 'SLICE: 13', '', '## Goal', '- x', ''].join('\n')
+    const projectRoot = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_13.consumed.md': body,
+      'STEP_5_SLICE_PACKET_14.superseded.md': body.replace('SLICE: 13', 'SLICE: 14'),
+      'STEP_5_SLICE_PACKET_15.archived.md': body.replace('SLICE: 13', 'SLICE: 15'),
+      'STEP_5_SLICE_PACKET.S16.consumed.md': body.replace('SLICE: 13', 'SLICE: 16'),
+    })
+    const packets = path.join(projectRoot, '.discipline', 'packets')
+    const before = fs.readdirSync(packets).sort()
+
+    const dry = runTsx('tools/discipline/migrate-packets.ts', ['--project-dir', projectRoot, '--stamp', 'T'])
+    expect(dry.status, getOutput(dry)).toBe(0)
+    expect(getOutput(dry)).toMatch(/No Step 5 packets found/)
+
+    const written = runTsx('tools/discipline/migrate-packets.ts', ['--project-dir', projectRoot, '--write', '--stamp', 'T'])
+    expect(written.status, getOutput(written)).toBe(0)
+    expect(fs.readdirSync(packets).sort(), 'no target, no backup, no legacy/ directory').toEqual(before)
+    expect(fs.existsSync(path.join(packets, 'STEP_5_SLICE_PACKET_13.md')), 'an archived packet must not come back as active').toBe(false)
+
+    // An active packet next to them is still migrated.
+    fs.writeFileSync(path.join(packets, 'STEP_5_SLICE_PACKET_17.md'), body.replace('SLICE: 13', 'SLICE: 17'), 'utf8')
+    const mixed = runTsx('tools/discipline/migrate-packets.ts', ['--project-dir', projectRoot, '--write', '--stamp', 'T'])
+    expect(mixed.status, getOutput(mixed)).toBe(0)
+    expect(fs.readFileSync(path.join(packets, 'STEP_5_SLICE_PACKET_17.md'), 'utf8')).toMatch(/schema: discipline\.packet\.step5/)
+    expect(fs.existsSync(path.join(packets, 'STEP_5_SLICE_PACKET_13.md'))).toBe(false)
+  }, 90000)
+
+  // A version nobody can read is not something to rewrite either.
+  it('migrate-packets: refuses a packet whose declared version it cannot read', () => {
+    const projectRoot = createDisciplineProject({
+      'STEP_5_SLICE_PACKET.md': ['---', 'schema: discipline.packet.step5', 'version: 3.0.0', 'id: x', 'status: ready',
+        'slice: 13', '---', '', '# STEP_5_SLICE_PACKET', '', '## Goal', '- x', ''].join('\n'),
+    })
+    const res = runTsx('tools/discipline/migrate-packets.ts', ['--project-dir', projectRoot, '--write', '--stamp', 'T'])
+    expect(res.status, getOutput(res)).not.toBe(0)
+    expect(getOutput(res)).toMatch(/REFUSED.*cannot read/)
+    expect(fs.readdirSync(path.join(projectRoot, '.discipline', 'packets'))).toEqual(['STEP_5_SLICE_PACKET.md'])
   }, 90000)
 
   // Migration says what it would do and touches nothing until asked; the original is kept with its hash.
