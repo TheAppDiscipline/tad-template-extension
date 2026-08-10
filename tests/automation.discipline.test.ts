@@ -1876,6 +1876,57 @@ describe('discipline:progress (update-progress.ts)', () => {
     expect(twoEvents).toMatch(/SECOND EVENT PROCESSED/)
   }, 90000)
 
+  // Step 4 writes the plan every later command reads, so the blocks it TEACHES have to be blocks
+  // this template accepts. They were not: the anchor named `## Ready Slices`, a heading the template
+  // does not have; the id sat in a `#` column while `Slice` held the name, which is not the column
+  // the parser reads; and a slice promoted to `ready` got a table row but no section of its own. The
+  // blocks are read OUT OF THE SKILL here, so the doc cannot drift away from the tooling.
+  it('the Step 4 patch blocks apply to a fresh template, and the promoted slice assembles', () => {
+    const skill = fs.readFileSync(path.join(repoRoot, '.claude', 'skills', 'discipline-step4', 'SKILL.md'), 'utf8')
+    const blockFromSkill = (name: string) => {
+      const open = skill.indexOf('\`\`\`markdown\n## ' + name)
+      expect(open, `${name}: fenced example missing from the Step 4 skill`).not.toBe(-1)
+      const start = open + '\`\`\`markdown\n'.length
+      const close = skill.indexOf('\n\`\`\`', start)
+      expect(close).not.toBe(-1)
+      return `${skill.slice(start, close)}\n`
+    }
+
+    const projectRoot = createDisciplineProject()
+    const pending = path.join(projectRoot, '.discipline', 'patches', 'pending')
+    const table = blockFromSkill('TASK_PLAN_PATCH_BLOCK - Step 4 ready slices')
+      .replace('| 0 | <name> | S/M/L | none | ready |', '| 0 | Bootstrap & Backend Confirmation | S | none | done |')
+      .replace('| 1 | <name> | S/M/L | 0 | planned (awaiting its own STEP_5_SLICE_PACKET) |', '| 7 | Shopping list | M | 0 | ready |')
+      .replace('| 2 | <name> | S/M/L | 0 | planned (awaiting its own STEP_5_SLICE_PACKET) |', '| 8 | Sharing | M | 7 | planned |')
+      .replace('...\n', '')
+    const sections = blockFromSkill('TASK_PLAN_SLICES_APPEND_BLOCK - Step 4 new slice sections')
+      .replace('## Slice <id> - <name>', '## Slice 7 - Shopping list')
+      .replace(/<one sentence>/g, 'Add and tick items.')
+      .replace(/<\.\.\.>/g, 'x')
+    fs.writeFileSync(path.join(pending, '2026-08-09_TASK_PLAN_PATCH_step4.md'), table, 'utf8')
+    fs.writeFileSync(path.join(pending, '2026-08-09_TASK_PLAN_SLICES_step4.md'), sections, 'utf8')
+
+    const patched = runTsx('tools/discipline/apply-patch.ts', ['--project-dir', projectRoot])
+    expect(patched.status, getOutput(patched)).toBe(0)
+    const plan = fs.readFileSync(path.join(projectRoot, 'task_plan.md'), 'utf8')
+    expect(plan).toMatch(/\| 7 \| Shopping list \| M \| 0 \| ready \|/)
+    // replace_section must not eat the sections that follow it.
+    expect(plan).toMatch(/^## Slice 0 - /m)
+    expect(plan).toMatch(/## Slice 7 - Shopping list/)
+
+    fs.writeFileSync(
+      path.join(projectRoot, '.discipline', 'packets', 'STEP_5_SLICE_PACKET_7.md'),
+      ['---', 'slice: 7', 'status: ready', '---', '', '# STEP_5_SLICE_PACKET', '', 'SLICE: 7 - Shopping list', '',
+        '## Goal', '- x', '## Scope', '- x', '## Contracts', '- x', '## Acceptance criteria', '- x', ''].join('\n'),
+      'utf8',
+    )
+    const assembled = runTsx('tools/discipline/assemble-paste-ready.ts', ['--step', '5', '--slice', '7', '--project-dir', projectRoot])
+    expect(assembled.status, getOutput(assembled)).toBe(0)
+    expect(fs.existsSync(path.join(projectRoot, '.discipline', 'paste-ready', 'step-5-7-input.md'))).toBe(true)
+    const validated = runTsx('tools/discipline/validate-discipline.ts', ['--project-dir', projectRoot])
+    expect(validated.status, getOutput(validated)).toBe(0)
+  }, 90000)
+
   // A completion packet the progress engine refuses cannot consume a slice either.
   it('watch stops when the progress engine refuses the completion packet', () => {
     const projectRoot = createDisciplineProject({
