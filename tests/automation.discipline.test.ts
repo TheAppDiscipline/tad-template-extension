@@ -2841,6 +2841,101 @@ describe('Step 5 packet schema v2 + migration', () => {
     expect(assemble(draft, ['--allow-draft']).status).toBe(0)
   }, 90000)
 
+  // Markdown gives the same sentence a dozen spellings, and each rule used to roll its own regex.
+  // `- **none**` was not the string "none"; `+ APPLIES: no` was not a bullet the not-applicable
+  // check knew. A contract you can satisfy by changing a bullet character is not a contract.
+  it('the contract reads the declaration, not its markdown costume', () => {
+    const gut = (packet: string, section: string, replacement: string) =>
+      packet.replace(new RegExp('## ' + section + '\\n[^#]*', 'm'), '## ' + section + '\n' + replacement + '\n\n')
+    const out = readCases({
+      boldNone: gut(V2_PACKET, 'Goal', '- **none**'),
+      tickedNone: gut(V2_PACKET, 'Goal', '- `none`'),
+      italicNotApplicable: gut(V2_PACKET, 'Contracts', '- *not applicable*'),
+      plusApplies: gut(V2_PACKET, 'Provider Impact', '+ APPLIES: no'),
+      starApplies: gut(V2_PACKET, 'AI Impact', '* APPLIES: no\n* RATIONALE: n/a'),
+      boldEvidence: V2_PACKET.replace('- AC1 failed against the previous build: the empty state was never rendered.', '- **none**'),
+      plusMethod: V2_PACKET.replace('- METHOD: red-evidence', '+ METHOD: red-evidence'),
+      boldControl: V2_PACKET.replace('| AC2 | one item | tick it | it renders as done | untick it and it renders as pending |', '| AC2 | one item | tick it | it renders as done | **none** |'),
+      boldHeader: V2_PACKET.replace('| ID | Setup | Action | Observable result | Negative control |', '| **ID** | Setup | Action | Observable result | `Negative control` |'),
+      duplicateBoldId: V2_PACKET.replace('| AC2 | one item', '| **AC1** | one item'),
+    })
+
+    expect(out.boldNone.errors.join('; ')).toMatch(/"Goal" is empty/)
+    expect(out.tickedNone.errors.join('; ')).toMatch(/"Goal" is empty/)
+    expect(out.italicNotApplicable.errors.join('; ')).toMatch(/"Contracts" is empty/)
+    // `+` is a markdown bullet too, so `+ APPLIES: no` is the same declaration as `- APPLIES: no`.
+    expect(out.plusApplies.errors.join('; ')).toMatch(/"Provider Impact" declares APPLIES: no without a checkable RATIONALE/)
+    expect(out.starApplies.errors.join('; ')).toMatch(/"AI Impact" declares APPLIES: no without a checkable RATIONALE/)
+    // Falsifiability evidence uses the SAME evasive test: METHOD then "none" proves nothing.
+    expect(out.boldEvidence.errors.join('; ')).toMatch(/declares METHOD: red-evidence and shows nothing/)
+    expect(out.plusMethod.errors).toEqual([])
+    // The false green this negative control exists to prevent.
+    expect(out.boldControl.errors.join('; ')).toMatch(/row 2 has no negative control/)
+    expect(out.boldHeader.errors).toEqual([])
+    expect(out.duplicateBoldId.errors.join('; ')).toMatch(/"ac1" appears 2 times/)
+  }, 60000)
+
+  // The migration writes three files and deletes one. Either all of that happened or none of it
+  // did: the order used to be write-then-check, so a collision left a backup behind that made every
+  // later attempt refuse, and a pre-existing `.sha256` was silently replaced.
+  it('migrate-packets: the migration is a transaction, and a failure leaves no residue', () => {
+    const legacyPacket = ['# STEP_5_SLICE_PACKET', '', 'SLICE: 13', '', '## Goal', '- x', ''].join('\n')
+    const project = () => createDisciplineProject({ 'STEP_5_SLICE_PACKET.md': legacyPacket })
+    const listing = (dir: string) => {
+      const packets = path.join(dir, '.discipline', 'packets')
+      const legacy = path.join(packets, 'legacy')
+      return [
+        ...fs.readdirSync(packets).sort(),
+        ...(fs.existsSync(legacy) ? fs.readdirSync(legacy).sort().map((f) => 'legacy/' + f) : []),
+      ]
+    }
+
+    // A pre-existing `.sha256` is refused BEFORE the backup is written, not overwritten after.
+    const collidingHash = project()
+    const legacyDir = path.join(collidingHash, '.discipline', 'packets', 'legacy')
+    fs.mkdirSync(legacyDir, { recursive: true })
+    fs.writeFileSync(path.join(legacyDir, 'STEP_5_SLICE_PACKET.13.md.sha256'), 'SOMEBODY ELSE WROTE THIS\n', 'utf8')
+    const before = listing(collidingHash)
+    const refused = runTsx('tools/discipline/migrate-packets.ts', ['--project-dir', collidingHash, '--write', '--stamp', 'T'])
+    expect(refused.status, getOutput(refused)).not.toBe(0)
+    expect(getOutput(refused)).toMatch(/sha256 already exists; nothing is overwritten/)
+    expect(fs.readFileSync(path.join(legacyDir, 'STEP_5_SLICE_PACKET.13.md.sha256'), 'utf8')).toBe('SOMEBODY ELSE WROTE THIS\n')
+    expect(listing(collidingHash), 'a refusal writes nothing, not even the backup').toEqual(before)
+
+    // A failure after EACH write leaves the directory as it was, and the next attempt is clean.
+    for (const failAfter of [1, 2, 3]) {
+      const dir = project()
+      const start = listing(dir)
+      const out = runTsxModule(
+        [
+          'const __out = {}',
+          "const fs = await import('node:fs')",
+          'let writes = 0',
+          'const ops = {',
+          '  write: (file, data, exclusive) => {',
+          '    writes += 1',
+          "    fs.writeFileSync(file, data, exclusive ? { flag: 'wx' } : {})",
+          `    if (writes === ${failAfter}) throw new Error('simulated failure after write ${failAfter}')`,
+          '  },',
+          '  remove: (file) => fs.rmSync(file),',
+          '}',
+          `__out.result = migratePackets(${JSON.stringify(dir)}, { write: true, stamp: 'T' }, ops)`,
+        ],
+        { '{ migratePackets }': 'tools/discipline/migrate-packets.ts' },
+      )
+      expect(out.result.ok, 'failing after write ' + failAfter + ' must not report success').toBe(false)
+      expect(out.result.plans[0].reason).toMatch(new RegExp('simulated failure after write ' + failAfter))
+      expect(out.result.plans[0].reason).toMatch(/Nothing was left behind/)
+      expect(listing(dir), 'a failure after write ' + failAfter + ' must leave no residue').toEqual(start)
+      expect(fs.readFileSync(path.join(dir, '.discipline', 'packets', 'STEP_5_SLICE_PACKET.md'), 'utf8')).toBe(legacyPacket)
+
+      // And the retry, with nothing injected, works: the residue is what used to block it.
+      const retry = runTsx('tools/discipline/migrate-packets.ts', ['--project-dir', dir, '--write', '--stamp', 'T'])
+      expect(retry.status, getOutput(retry)).toBe(0)
+      expect(listing(dir)).toEqual(['STEP_5_SLICE_PACKET_13.md', 'legacy', 'legacy/STEP_5_SLICE_PACKET.13.md', 'legacy/STEP_5_SLICE_PACKET.13.md.sha256'])
+    }
+  }, 120000)
+
   // Migration says what it would do and touches nothing until asked; the original is kept with its hash.
   it('migrate-packets: dry-run writes nothing, --write keeps the original and its hash, and is idempotent', () => {
     const legacyPacket = ['# STEP_5_SLICE_PACKET', '', 'STATUS: ready', 'SLICE: 13', '', '## Goal', '- x', '## Scope', '- x', '## Contracts', '- x', '## Acceptance criteria', '- x', ''].join('\n')
