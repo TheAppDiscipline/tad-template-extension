@@ -59,6 +59,7 @@
     "discipline:lease": "tsx tools/discipline/lease.ts",
     "discipline:checkpoint": "tsx tools/discipline/checkpoint.ts",
     "discipline:gate:report": "tsx tools/discipline/gate-report.ts",
+    "discipline:gate:changed": "tsx tools/discipline/gate-changed.ts",
     "discipline:review": "tsx tools/discipline/diff-report.ts",
     "discipline:release-pack": "tsx tools/discipline/release-pack.ts",
     "discipline:cross-validate": "tsx tools/discipline/cross-validate.ts",

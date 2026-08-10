@@ -1,0 +1,73 @@
+{
+  "schema": "discipline.gates.v1",
+  "lane": "EXTENSION",
+  "_readme": [
+    "Which gates cover which files, for `discipline gate --changed`. `npm run gate` is unchanged and",
+    "always correct; this is the map that lets a change run a subset of it without losing coverage.",
+    "Edit it when your project grows a directory this map does not know: an unmapped file is not",
+    "ignored, it makes the FULL gate run, so the cost of an out-of-date map is time, never a missed check.",
+    "Scripts are npm script names and must exist in package.json. Every surface needs an entry, even an",
+    "empty one, because a surface nobody mentions is a gate nobody runs.",
+    "This lane ships no migrations, so `schema` maps to no path: it only ever arrives declared."
+  ],
+  "base": ["discipline:provider:check"],
+  "surfaces": {
+    "ui": ["lint", "compile", "test", "check-tokens"],
+    "authenticated-ui": ["lint", "compile", "test", "check-tokens", "check-secrets", "check-queries"],
+    "backend": ["lint", "compile", "test", "check-secrets", "check-https", "check-queries"],
+    "schema": ["test", "check-db-types"],
+    "permissions": ["test", "check-secrets", "build", "check-manifest"],
+    "deployment-artifact": ["lint", "compile", "test", "build", "build:firefox", "check-manifest", "check-bundle-extension"],
+    "ai": ["lint", "compile", "test", "ai:eval"],
+    "docs-only": ["discipline:validate", "test"]
+  },
+  "rules": [
+    {
+      "surface": "ui",
+      "prefixes": ["entrypoints/popup/", "entrypoints/options/", "entrypoints/content", "src/components/", "src/styles/", "public/"],
+      "extensions": [".css", ".html"]
+    },
+    {
+      "surface": "authenticated-ui",
+      "prefixes": ["src/auth/", "src/lib/auth/", "entrypoints/popup/account"],
+      "extensions": []
+    },
+    {
+      "surface": "backend",
+      "prefixes": ["entrypoints/background", "src/lib/backend/", "src/lib/messaging.ts", "src/lib/storage.ts"],
+      "extensions": []
+    },
+    {
+      "surface": "schema",
+      "prefixes": ["src/lib/backend/database.types.ts", "database.types.ts"],
+      "extensions": [".sql"]
+    },
+    {
+      "surface": "permissions",
+      "prefixes": ["wxt.config.ts"],
+      "extensions": []
+    },
+    {
+      "surface": "deployment-artifact",
+      "prefixes": [".github/workflows/", "wxt.config.ts", "vitest.config.ts", "public/manifest"],
+      "extensions": []
+    },
+    {
+      "surface": "ai",
+      "prefixes": ["evals/", "prompts/", "src/lib/ai/", "tools/llm_"],
+      "extensions": []
+    },
+    {
+      "surface": "docs-only",
+      "prefixes": [],
+      "extensions": [".md"]
+    }
+  ],
+  "exclude": [
+    ".discipline/packets/", ".discipline/patches/", ".discipline/paste-ready/", ".discipline/prompts/", ".discipline/locks/",
+    ".discipline/ledger/", ".discipline/review/", ".discipline/backups/", ".discipline/gate-report.json", ".discipline/STOP",
+    "node_modules/", ".output/", ".wxt/", "dist/", "build/", "coverage/", "test-results/",
+    "playwright-report/", ".vscode/", ".idea/"
+  ],
+  "unmapped": "gate"
+}

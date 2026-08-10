@@ -3179,3 +3179,480 @@ describe('Step 5 packet schema v2 + migration', () => {
     expect(fs.readFileSync(path.join(noSurfaces, '.discipline', 'packets', 'STEP_5_SLICE_PACKET_13.md'), 'utf8')).toMatch(/status: draft\n/)
   }, 90000)
 })
+
+// The full `npm run gate` is always right and always the whole thing. `gate --changed` runs a
+// SUBSET of it, chosen from what the change touched, so every test below asks the same question:
+// can the subset ever be smaller than what the change needs? A "no" has to hold for a broken map,
+// a silent git, an unknown directory and a packet that under-declares.
+describe('Fase 3: hybrid gates (gate --changed)', () => {
+  const V2_FRONTMATTER = [
+    '---',
+    'schema: discipline.packet.step5',
+    'version: 2.0.0',
+    'id: step5:13:20260810T120000',
+    'status: ready',
+    'slice: 13',
+    'affected_surfaces:',
+    '  - ui',
+    'required_gates:',
+    '  - gate',
+    '---',
+    '',
+  ].join('\n')
+
+  const V2_BODY = [
+    '# STEP_5_SLICE_PACKET',
+    '',
+    'SLICE: 13',
+    '',
+    '## Goal',
+    '- Add the shopping list screen.',
+    '',
+    '## Scope',
+    '- IN: list, add, tick.',
+    '- OUT: sharing.',
+    '',
+    '## Contracts',
+    '- items(id, name, done)',
+    '',
+    '## Provider Impact',
+    '- APPLIES: no',
+    '- RATIONALE: the slice only reads the local store, so no provider call is added.',
+    '',
+    '## AI Impact',
+    '- APPLIES: no',
+    '- RATIONALE: listing and ticking items involves no model call at all.',
+    '',
+    '## Reachable States',
+    '| State | Trigger | Committed effects | Returned result | Recovery |',
+    '|---|---|---|---|---|',
+    '| empty | first open | none | empty list | add an item |',
+    '| loaded | items exist | none | the items | reload |',
+    '',
+    '## Acceptance Criteria',
+    '| ID | Setup | Action | Observable result | Negative control |',
+    '|---|---|---|---|---|',
+    '| AC1 | no items | open the list | the empty state renders | seed an item; the empty state must not render |',
+    '| AC2 | one item | tick it | it renders as done | untick it and it renders as pending |',
+    '',
+    '## Falsifiability',
+    '- METHOD: red-evidence',
+    '- AC1 failed against the previous build: the empty state was never rendered.',
+    '',
+    '## Files to touch',
+    '- src/screens/list.tsx',
+    '',
+    '## Deployment Compatibility',
+    '- No migration; the slice is additive.',
+    '',
+    '## Manual Verification',
+    '- Open the app with an empty store and check the empty state.',
+    '',
+    '## Estimate',
+    '- 120 lines of production code.',
+    '',
+  ].join('\n')
+
+  const V2_PACKET = V2_FRONTMATTER + V2_BODY
+  const GATES_PLAN = ['# task_plan.md', '', '## 4) Ready Slices', '', '## Slice 13 - list', '- Status: ready', '#### Goal', 'x', ''].join('\n')
+
+  // A deliberately small map: what is under test is the selection, not this project's real gates.
+  const FIXTURE_GATES = {
+    schema: 'discipline.gates.v1',
+    base: ['provider-check'],
+    surfaces: {
+      ui: ['lint', 'test', 'check-tokens'],
+      'authenticated-ui': ['lint', 'test', 'check-secrets'],
+      backend: ['lint', 'test', 'check-rls'],
+      schema: ['test', 'migration-lint'],
+      permissions: ['check-rls'],
+      'deployment-artifact': ['test'],
+      ai: ['ai-eval'],
+      'docs-only': ['validate'],
+    },
+    rules: [
+      { surface: 'ui', prefixes: ['src/components/'], extensions: ['.css'] },
+      { surface: 'backend', prefixes: ['src/lib/backend/'] },
+      { surface: 'schema', prefixes: ['supabase/migrations/'], extensions: ['.sql'] },
+      { surface: 'ai', prefixes: ['evals/'] },
+      { surface: 'docs-only', prefixes: [], extensions: ['.md'] },
+    ],
+    exclude: ['.discipline/', 'node_modules/'],
+    unmapped: 'gate',
+  }
+
+  const FIXTURE_SCRIPTS: Record<string, string> = Object.fromEntries(
+    ['provider-check', 'lint', 'test', 'check-tokens', 'check-secrets', 'check-rls', 'migration-lint', 'ai-eval', 'validate', 'gate']
+      .map((name) => [name, `node -e "console.log('ran ${name}')"`]),
+  )
+
+  function gitIn(root: string, args: string[]) {
+    const proc = spawnSync('git', args, { cwd: root, encoding: 'utf8' })
+    expect(proc.status, `git ${args.join(' ')}: ${proc.stdout}${proc.stderr}`).toBe(0)
+    return proc.stdout
+  }
+
+  function writeFiles(root: string, files: Record<string, string>) {
+    for (const [rel, content] of Object.entries(files)) {
+      const target = path.join(root, rel)
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.writeFileSync(target, content, 'utf8')
+    }
+  }
+
+  /**
+   * A project that is a real git repository, because the change is read from git and nowhere else.
+   * Everything the fixture starts with is committed, so the tree is clean until a test dirties it.
+   */
+  function createGateProject(
+    { packets = {}, files = {}, gates = FIXTURE_GATES, scripts = FIXTURE_SCRIPTS }:
+    { packets?: Record<string, string>; files?: Record<string, string>; gates?: unknown; scripts?: Record<string, string> } = {},
+  ): string {
+    const root = createDisciplineProject(packets)
+    fs.writeFileSync(path.join(root, 'task_plan.md'), GATES_PLAN, 'utf8')
+    fs.writeFileSync(path.join(root, '.discipline', 'gates.json'), JSON.stringify(gates, null, 2), 'utf8')
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'gate-fixture', private: true, scripts }, null, 2), 'utf8')
+    gitIn(root, ['init', '-q'])
+    gitIn(root, ['config', 'user.email', 'fixture@example.com'])
+    gitIn(root, ['config', 'user.name', 'fixture'])
+    gitIn(root, ['add', '-A'])
+    gitIn(root, ['commit', '-qm', 'baseline'])
+    writeFiles(root, files)
+    return root
+  }
+
+  /** Plan a changed-gate run without executing a single script. */
+  function planGate(root: string, options: Record<string, unknown> = {}) {
+    return runTsxModule(
+      [
+        `const __out = {}`,
+        `try { __out.plan = planChangedGate(${JSON.stringify(root)}, ${JSON.stringify(options)}) }`,
+        `catch (err) { __out.error = { name: err.name, message: err.message } }`,
+      ],
+      { '{ planChangedGate }': 'tools/discipline/gate-changed.ts' },
+    )
+  }
+
+  // The map is the only place that says which gates cover which files, so an unreadable map has to
+  // stop the command. Every case here would otherwise mean "run fewer gates than the change needs":
+  // a schema nobody knows, a surface nobody mentioned, a script that does not exist, a rule that
+  // matches nothing.
+  it('an incomplete map is refused, never partially applied', () => {
+    const good = JSON.stringify(FIXTURE_GATES)
+    const mutate = (fn: (config: Record<string, never>) => void) => {
+      const copy = JSON.parse(good)
+      fn(copy)
+      return JSON.stringify(copy)
+    }
+    const out = runTsxModule(
+      [
+        `const __out = {}`,
+        `const scripts = new Set(${JSON.stringify(Object.keys(FIXTURE_SCRIPTS))})`,
+        `const cases = ${JSON.stringify({
+          futureSchema: mutate((c) => { (c as Record<string, unknown>).schema = 'discipline.gates.v2' }),
+          missingSurface: mutate((c) => { delete (c as Record<string, Record<string, unknown>>).surfaces.ai }),
+          unknownSurface: mutate((c) => { (c as Record<string, Record<string, unknown>>).surfaces.frontend = ['lint'] }),
+          missingScript: mutate((c) => { (c as Record<string, Record<string, unknown>>).surfaces.ui = ['lint', 'check-nothing'] }),
+          emptyRule: mutate((c) => { (c as Record<string, unknown[]>).rules.push({ surface: 'ui', prefixes: [], extensions: [] }) }),
+          noRules: mutate((c) => { (c as Record<string, unknown>).rules = [] }),
+          badJson: '{ not json',
+          good,
+        })}`,
+        `for (const [name, raw] of Object.entries(cases)) {`,
+        `  try { parseGatesConfig(raw, scripts); __out[name] = null }`,
+        `  catch (err) { __out[name] = err.message }`,
+        `}`,
+      ],
+      { '{ parseGatesConfig }': 'tools/discipline/lib/gates-config.ts' },
+    )
+
+    expect(out.futureSchema).toMatch(/declares schema "discipline\.gates\.v2"/)
+    expect(out.missingSurface).toMatch(/says nothing about ai/)
+    expect(out.unknownSurface).toMatch(/"frontend", which is not a surface/)
+    expect(out.missingScript).toMatch(/does not define: check-nothing \("surfaces\.ui"\)/)
+    expect(out.emptyRule).toMatch(/matches nothing/)
+    expect(out.noRules).toMatch(/"rules" must be a non-empty array/)
+    expect(out.badJson).toMatch(/not valid JSON/)
+    expect(out.good, `the fixture map itself must parse: ${out.good}`).toBeNull()
+  }, 60000)
+
+  // Rules are additive and exclusions win. A file matching no rule is NOT ignored: it is the reason
+  // the full gate runs, because not knowing what covers a file is a reason to run more, not less.
+  it('surfaces are inferred additively, and an unknown file pulls in the full gate', () => {
+    const out = runTsxModule(
+      [
+        `const __out = {}`,
+        `const config = parseGatesConfig(${JSON.stringify(JSON.stringify(FIXTURE_GATES))}, null)`,
+        `__out.inference = inferSurfaces(config, [`,
+        `  'src/components/List.tsx', 'src/styles/app.css', 'supabase/migrations/001_init.sql',`,
+        `  'src/lib/backend/index.ts', 'progress.md', '.discipline/packets/STEP_5_SLICE_PACKET_13.md',`,
+        `  'scripts/deploy.py',`,
+        `])`,
+        `__out.scripts = gatesForSurfaces(config, __out.inference.surfaces)`,
+      ],
+      { '{ parseGatesConfig, inferSurfaces, gatesForSurfaces }': 'tools/discipline/lib/gates-config.ts' },
+    )
+
+    expect(out.inference.surfaces).toEqual(['ui', 'backend', 'schema', 'docs-only'])
+    // The .sql file matched by extension AND the migrations prefix, and counts once.
+    expect(out.inference.evidence.schema).toEqual(['supabase/migrations/001_init.sql'])
+    expect(out.inference.evidence.ui).toEqual(['src/components/List.tsx', 'src/styles/app.css'])
+    // Pipeline state needs no gate of its own; an unknown directory is not the same thing as excluded.
+    expect(out.inference.excluded).toEqual(['.discipline/packets/STEP_5_SLICE_PACKET_13.md'])
+    expect(out.inference.unmapped).toEqual(['scripts/deploy.py'])
+    // base first, then surfaces in canonical order, deduplicated.
+    expect(out.scripts).toEqual(['provider-check', 'lint', 'test', 'check-tokens', 'check-rls', 'migration-lint', 'validate'])
+  }, 60000)
+
+  // THE POINT OF THE PHASE. The packet is the document a builder works from, and a surface missing
+  // there is a gate nobody was ever going to run. So a change that touches a surface the packet does
+  // not declare stops BEFORE any gate: it is a disagreement about what the slice is, not a red test.
+  it('a surface the packet never declared refuses the run, before running anything', () => {
+    const root = createGateProject({
+      packets: { 'STEP_5_SLICE_PACKET_13.md': V2_PACKET },
+      files: {
+        'src/components/List.tsx': 'export const List = () => null\n',
+        'supabase/migrations/001_items.sql': 'create table items (id int);\n',
+      },
+    })
+
+    const refused = planGate(root, { slice: '13' })
+    expect(refused.error, JSON.stringify(refused.error)).toBeUndefined()
+    expect(refused.plan.refusal).toMatch(/touches 1 surface\(s\) the packet for slice "13" does not declare/)
+    expect(refused.plan.refusal).toMatch(/- schema: supabase\/migrations\/001_items\.sql/)
+    expect(refused.plan.refusal).toMatch(/declared: ui/)
+    expect(refused.plan.scripts, 'a refusal plans no scripts at all').toEqual([])
+    expect(refused.plan.surfaces.omitted).toEqual(['schema'])
+
+    // The refusal is the report: passed false, nothing run, and a signature of its own so the Repair
+    // Budget counts the same refusal twice as the repeat it is.
+    const report = runTsxModule(
+      [
+        `const __out = {}`,
+        `const ops = { run: () => { throw new Error('no script may run after a refusal') } }`,
+        `__out.report = runChangedGate(${JSON.stringify(root)}, { slice: '13' }, ops)`,
+      ],
+      { '{ runChangedGate }': 'tools/discipline/gate-changed.ts' },
+    )
+    expect(report.report.passed).toBe(false)
+    expect(report.report.schema).toBe('discipline.gate_report.v2')
+    expect(report.report.steps).toEqual([])
+    expect(report.report.error_signature, 'a refusal carries a signature').toBeTruthy()
+    expect(report.report.failed_checks.join(' ')).toMatch(/refused before running anything/)
+
+    // Take the undeclared file out and the same packet is fine: the rule is about the disagreement.
+    fs.rmSync(path.join(root, 'supabase', 'migrations', '001_items.sql'))
+    const allowed = planGate(root, { slice: '13' })
+    expect(allowed.plan.refusal, String(allowed.plan.refusal)).toBeNull()
+    expect(allowed.plan.surfaces.used).toEqual(['ui'])
+  }, 120000)
+
+  // Declaring a surface the change does not touch is the conservative mistake, and it stays allowed:
+  // its gates run anyway. Over-declaring costs time; under-declaring costs coverage.
+  it('declaring more than you touched is allowed, and those gates still run', () => {
+    const packet = V2_PACKET.replace('affected_surfaces:\n  - ui\n', 'affected_surfaces:\n  - ui\n  - backend\n')
+    const root = createGateProject({
+      packets: { 'STEP_5_SLICE_PACKET_13.md': packet },
+      files: { 'src/components/List.tsx': 'export const List = () => null\n' },
+    })
+
+    const out = planGate(root, { slice: '13' })
+    expect(out.plan.refusal, String(out.plan.refusal)).toBeNull()
+    expect(out.plan.surfaces.inferred).toEqual(['ui'])
+    expect(out.plan.surfaces.declared).toEqual(['ui', 'backend'])
+    expect(out.plan.surfaces.extra).toEqual(['backend'])
+    expect(out.plan.scripts, `backend's gate must run: ${out.plan.scripts.join(', ')}`).toContain('check-rls')
+    // required_gates is additive too: the packet asks for the full gate, so the full gate is in there.
+    expect(out.plan.scripts, `required_gates must be honored: ${out.plan.scripts.join(', ')}`).toContain('gate')
+  }, 60000)
+
+  // Two ways the subset could silently shrink to nothing: a file in a directory the map never heard
+  // of, and a slice that changed no file at all. The first runs MORE; the second is a contradiction.
+  it('an unmapped file runs the full gate, and a slice that changed nothing is refused', () => {
+    const unknown = createGateProject({ files: { 'scripts/deploy.py': 'print(1)\n' } })
+    const out = planGate(unknown, {})
+    expect(out.plan.refusal, String(out.plan.refusal)).toBeNull()
+    expect(out.plan.scripts, `the full gate must be pulled in: ${out.plan.scripts.join(', ')}`).toContain('gate')
+    expect(out.plan.unmappedFiles).toEqual(['scripts/deploy.py'])
+    expect(out.plan.notes.join(' ')).toMatch(/match no rule/)
+
+    const clean = createGateProject({ packets: { 'STEP_5_SLICE_PACKET_13.md': V2_PACKET } })
+    const nothing = planGate(clean, { slice: '13' })
+    expect(nothing.plan.refusal).toMatch(/no committed, staged, unstaged or untracked change for slice "13"/)
+    expect(nothing.plan.scripts).toEqual([])
+    // Without a slice there is nothing to contradict: an empty tree just has no gates to run.
+    const idle = planGate(clean, {})
+    expect(idle.plan.refusal).toBeNull()
+    expect(idle.plan.files).toEqual([])
+  }, 120000)
+
+  // "We could not tell what changed" and "nothing changed" produce the same empty list, and one of
+  // them is a green that verified nothing. Every git failure is fatal here for that reason.
+  it('git failing is fatal, not an empty change set', () => {
+    const notARepo = createDisciplineProject({})
+    const withRepo = createGateProject({ files: { 'src/components/List.tsx': 'x\n' } })
+    const out = runTsxModule(
+      [
+        `const __out = {}`,
+        `const attempt = (root, base) => { try { return { files: collectChangedFiles(root, base).files } } catch (err) { return { error: err.name + ': ' + err.message } } }`,
+        `__out.noRepo = attempt(${JSON.stringify(notARepo)}, null)`,
+        `__out.badBase = attempt(${JSON.stringify(withRepo)}, 'no-such-ref')`,
+        `__out.ok = attempt(${JSON.stringify(withRepo)}, 'HEAD')`,
+      ],
+      { '{ collectChangedFiles }': 'tools/discipline/lib/changed-files.ts' },
+    )
+    expect(out.noRepo.error).toMatch(/ChangedFilesError/)
+    expect(out.noRepo.files, 'a directory that is not a repository must not answer "nothing changed"').toBeUndefined()
+    expect(out.badBase.error).toMatch(/base ref "no-such-ref" does not resolve to a commit/)
+    expect(out.ok.files).toEqual(['src/components/List.tsx'])
+
+    // And the command itself refuses instead of writing a green report it could not measure.
+    const missingMap = createDisciplineProject({})
+    const cli = runTsx('tools/discipline/gate-changed.ts', ['--project-dir', missingMap])
+    expect(cli.status, getOutput(cli)).toBe(2)
+    expect(getOutput(cli)).toMatch(/gates\.json not found/)
+    expect(fs.existsSync(path.join(missingMap, '.discipline', 'gate-report.json')), 'nothing was measured, so nothing is written').toBe(false)
+  }, 120000)
+
+  // v1 and v2 share one path, so every reader has to answer the same question of both. A schema
+  // neither of them knows is not read as green: its `passed` may not mean what the reader assumes.
+  it('the report readers know v1 and v2, and refuse anything else', () => {
+    const write = (body: string) => {
+      const root = createDisciplineProject({})
+      fs.writeFileSync(path.join(root, '.discipline', 'gate-report.json'), body, 'utf8')
+      return root
+    }
+    const v1 = write(JSON.stringify({ schema: 'discipline.gate_report.v1', passed: true, failed_checks: [], ts: 'T' }))
+    const v2 = write(JSON.stringify({
+      schema: 'discipline.gate_report.v2', passed: true, failed_checks: [], ts: 'T', mode: 'changed',
+      files: ['src/components/List.tsx'], surfaces: { used: ['ui'] },
+    }))
+    const v3 = write(JSON.stringify({ schema: 'discipline.gate_report.v3', passed: true, failed_checks: [] }))
+    const noSchema = write(JSON.stringify({ passed: true, failed_checks: [] }))
+    const broken = write('{ not json')
+
+    const out = runTsxModule(
+      [
+        `const __out = {}`,
+        `for (const [name, root] of Object.entries(${JSON.stringify({ v1, v2, v3, noSchema, broken })})) {`,
+        `  const read = readGateReportFile(root)`,
+        `  __out[name] = read.ok ? { ok: true, passed: read.report.passed, mode: read.report.mode, files: read.report.files, surfaces: read.report.surfaces } : { ok: false, reason: read.reason }`,
+        `}`,
+      ],
+      { '{ readGateReportFile }': 'tools/discipline/lib/gate-report-io.ts' },
+    )
+    expect(out.v1).toEqual({ ok: true, passed: true, mode: null, files: null, surfaces: null })
+    expect(out.v2).toEqual({ ok: true, passed: true, mode: 'changed', files: ['src/components/List.tsx'], surfaces: ['ui'] })
+    expect(out.v3).toEqual({ ok: false, reason: 'unknown-schema' })
+    expect(out.noSchema).toEqual({ ok: false, reason: 'unknown-schema' })
+    expect(out.broken).toEqual({ ok: false, reason: 'malformed' })
+
+    // The checkpoint says a partial gate is partial. A human approves from that packet, and "PASSED"
+    // alone would read as the whole gate.
+    const scoped = runTsx('tools/discipline/checkpoint.ts', ['create', '--slice', '13', '--kind', 'pre-commit', '--project-dir', v2])
+    expect(scoped.status, getOutput(scoped)).toBe(0)
+    const packetFile = fs.readdirSync(path.join(v2, '.discipline', 'packets')).find((f) => f.startsWith('CHECKPOINT_'))!
+    const packetText = fs.readFileSync(path.join(v2, '.discipline', 'packets', packetFile), 'utf8')
+    expect(packetText).toMatch(/scope: CHANGED FILES ONLY \(1 file\(s\); surfaces: ui\)/)
+    expect(packetText).toMatch(/subset of `npm run gate`/)
+  }, 120000)
+
+  // The Stop hook decides whether a session may end. A green report that never saw a file the session
+  // edited is green about something else: mtimes only catch that when the clocks agree.
+  it('the Stop hook blocks on an unknown schema and on a file the report never saw', async () => {
+    const { decideCore, decide } = await importHook('stop-gate.mjs')
+    const green = (files: string[] | null) => ({ exists: true, mtimeMs: 10_000, passed: true, files })
+    const at = (modifiedFiles: string[], gateReport: unknown) => decideCore({ stopHookActive: false, modifiedFiles, gateReport, newestModifiedMtimeMs: 1 })
+
+    expect(at(['src/a.ts'], green(['src/a.ts'])).block).toBe(false)
+    const uncovered = at(['src/a.ts', 'src/b.ts'], green(['src/a.ts']))
+    expect(uncovered.block).toBe(true)
+    expect(uncovered.reason).toMatch(/Not covered: src\/b\.ts/)
+    // A v1 report carries no file list, so it keeps behaving exactly as it did.
+    expect(at(['src/a.ts'], green(null)).block).toBe(false)
+
+    // Against a real repo: a report whose schema this hook does not know is no report at all.
+    const root = createGateProject({})
+    const reportPath = path.join(root, '.discipline', 'gate-report.json')
+    fs.appendFileSync(path.join(root, 'progress.md'), '\n- edited during the session\n', 'utf8')
+    fs.writeFileSync(reportPath, JSON.stringify({ schema: 'discipline.gate_report.v3', passed: true, files: ['progress.md'] }), 'utf8')
+    expect(decide({ stop_hook_active: false }, root).block, 'an unknown schema must not end a session').toBe(true)
+
+    // The same report under a schema this hook knows, covering that same file, ends it.
+    fs.writeFileSync(
+      reportPath,
+      JSON.stringify({ schema: 'discipline.gate_report.v2', passed: true, failed_checks: [], files: ['progress.md'] }),
+      'utf8',
+    )
+    expect(decide({ stop_hook_active: false }, root).block).toBe(false)
+  }, 60000)
+
+  // End to end, with trivial scripts: the selected steps are the ones that run, in order, once each.
+  it('runs exactly the selected steps and writes the v2 report', () => {
+    const root = createGateProject({
+      packets: { 'STEP_5_SLICE_PACKET_13.md': V2_PACKET.replace('required_gates:\n  - gate\n', 'required_gates:\n  - check-tokens\n') },
+      files: { 'src/components/List.tsx': 'export const List = () => null\n' },
+    })
+    const run = runTsx('tools/discipline/gate-changed.ts', ['--project-dir', root, '--slice', '13'])
+    expect(run.status, getOutput(run)).toBe(0)
+
+    const report = JSON.parse(fs.readFileSync(path.join(root, '.discipline', 'gate-report.json'), 'utf8'))
+    expect(report.schema).toBe('discipline.gate_report.v2')
+    expect(report.mode).toBe('changed')
+    expect(report.passed).toBe(true)
+    expect(report.refusal).toBeNull()
+    expect(report.files).toEqual(['src/components/List.tsx'])
+    expect(report.surfaces.used).toEqual(['ui'])
+    expect(report.steps.map((s: { cmd: string }) => s.cmd)).toEqual(['npm run provider-check', 'npm run lint', 'npm run test', 'npm run check-tokens'])
+    expect(report.steps.every((s: { exit: number }) => s.exit === 0), JSON.stringify(report.steps)).toBe(true)
+
+    // A failing step is a failing report, and the first error line is captured for the repair prompt.
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: 'gate-fixture', private: true, scripts: { ...FIXTURE_SCRIPTS, lint: 'node -e "console.error(\'Error: two spaces\'); process.exit(1)"' } }, null, 2),
+      'utf8',
+    )
+    const failed = runTsx('tools/discipline/gate-changed.ts', ['--project-dir', root, '--slice', '13'])
+    expect(failed.status, getOutput(failed)).toBe(1)
+    const failedReport = JSON.parse(fs.readFileSync(path.join(root, '.discipline', 'gate-report.json'), 'utf8'))
+    expect(failedReport.passed).toBe(false)
+    expect(failedReport.failed_checks).toEqual(['npm run lint'])
+    expect(failedReport.error_signature, 'a failure carries a signature for the Repair Budget').toBeTruthy()
+  }, 180000)
+
+  // The map is a second copy of a truth package.json already holds, so it can drift. If a step of the
+  // full gate is in no surface, `gate --changed` can never run it: the subset would be missing a
+  // check the project believes is part of its gate.
+  it("this project's map covers every step of its own full gate", () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'))
+    const gates = JSON.parse(fs.readFileSync(path.join(repoRoot, '.discipline', 'gates.json'), 'utf8'))
+    const mapped = new Set<string>([...gates.base, ...Object.values(gates.surfaces).flat() as string[]])
+
+    for (const script of mapped) {
+      expect(pkg.scripts[script], `.discipline/gates.json names "${script}", which package.json does not define`).toBeTruthy()
+    }
+    const resolved = new Set([...mapped].map((script) => pkg.scripts[script]))
+    for (const step of pkg.scripts.gate.split(' && ').map((s: string) => s.trim())) {
+      const asScript = step.match(/^npm run (\S+)$/)
+      const command = asScript ? pkg.scripts[asScript[1]] ?? step : step
+      expect(
+        resolved.has(command) || Boolean(asScript && mapped.has(asScript[1])),
+        `the full gate runs "${step}", and no surface in .discipline/gates.json does. ` +
+          'Add it to the surface it belongs to, or `gate --changed` will never run it.',
+      ).toBe(true)
+    }
+
+    // And the map cannot exempt itself. A gates.json that excluded its own path could shrink what this
+    // project verifies, and the change that shrank it would run no check at all.
+    const self = runTsxModule(
+      [
+        `const __out = {}`,
+        `const config = parseGatesConfig(${JSON.stringify(JSON.stringify(gates))}, null)`,
+        `__out.inference = inferSurfaces(config, ['.discipline/gates.json'])`,
+      ],
+      { '{ parseGatesConfig, inferSurfaces }': 'tools/discipline/lib/gates-config.ts' },
+    )
+    expect(self.inference.excluded, '.discipline/gates.json must not be excluded from the gates it selects').toEqual([])
+    expect(self.inference.unmapped, 'changing the map must run the full gate').toEqual(['.discipline/gates.json'])
+  }, 60000)
+})
