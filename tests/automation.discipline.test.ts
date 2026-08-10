@@ -1104,13 +1104,40 @@ describe('Phase-2 adapters + run reconciler', () => {
     expect(fs.readFileSync(path.join(repo, 'progress.md'), 'utf8'), 'progress.md must not declare a closure that could not be recorded').toBe(progressBefore)
     expect(fs.readFileSync(packetPath, 'utf8')).toBe(packetBefore)
     expect(fs.readFileSync(packetPath, 'utf8')).not.toMatch(/status: consumed/)
+    // One run, one terminal event. This path goes through terminalStop, which writes run_finished
+    // itself, and the incomplete() helper used to write a second one; the ledger is what the crash
+    // check and the Repair Budget read, so a run that "ended" twice is a run they cannot trust.
+    const ledgerDir = path.join(repo, '.discipline', 'ledger')
+    const ledger = fs.readFileSync(path.join(ledgerDir, fs.readdirSync(ledgerDir)[0]), 'utf8')
+    expect((ledger.match(/run_finished/g) || []).length, ledger).toBe(1)
     fs.rmSync(repo, { recursive: true, force: true })
   }, 120000)
 
-  // The other half: when the LAST write of the transition fails, the first one is undone. The
-  // failure is injected because a real one (a packet that became unwritable between the check and
-  // the write) is a race no test can stage reliably; what is being proved is what survives it.
-  it('a closure whose consumption cannot be written restores progress.md', () => {
+  // A slice id is a STRING, all of it. Turning it into a number collapsed `S27E2b` to 27 and
+  // `13.2` to 13, so the slice right after a composite id never compared greater: progress.md
+  // announced "all slices completed" with the next slice sitting in the plan, unstarted.
+  it('a composite slice id keeps its whole id, so the next slice stays visible', () => {
+    const closing = (id: string) => ['## SLICE_COMPLETION_PACKET', '', `SLICE: ${id}`, '', '### Outcome', '- done', '',
+      '### Gates passed', '- GATE_STATE: passed', ''].join('\n')
+    const plan = (current: string, next: string) => ['# task_plan.md', '', '## 4) Ready Slices', '',
+      `## Slice ${current} - first`, '#### Goal', 'x', '', `## Slice ${next} - second`, '#### Goal', 'y', ''].join('\n')
+
+    for (const [current, next] of [['S27E2b', 'S27E2c'], ['13.2', '13.3'], ['S27E2b', 'S27E10a']]) {
+      const projectRoot = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': closing(current) })
+      fs.writeFileSync(path.join(projectRoot, 'task_plan.md'), plan(current, next), 'utf8')
+      const res = runTsx('tools/discipline/update-progress.ts', ['--project-dir', projectRoot])
+      expect(res.status, getOutput(res)).toBe(0)
+      const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
+      expect(progress, `closing ${current} must leave ${next} as the next slice`)
+        .toMatch(new RegExp(`- Working on: Slice ${next.replace('.', '\\.')} - second`))
+      expect(progress).not.toMatch(/all slices completed/)
+      expect(progress).toMatch(new RegExp(`Slice ${current.replace('.', '\\.')}`))
+    }
+  }, 90000)
+
+  // "Both halves or neither" only means something against a failure that already wrote. The packet
+  // is backed up too, so a marker write that corrupts it and then fails leaves neither file changed.
+  it('a consumption that fails AFTER touching the packet restores both files', () => {
     const completion = ['## SLICE_COMPLETION_PACKET', '', 'SLICE: 13', '', '### Outcome', '- done', '',
       '### Gates passed', '- GATE_STATE: passed', '', '### Deploy signal', '- ready_for_preview', ''].join('\n')
     const projectRoot = createDisciplineProject({
@@ -1120,21 +1147,25 @@ describe('Phase-2 adapters + run reconciler', () => {
     const progressPath = path.join(projectRoot, 'progress.md')
     const packetPath = path.join(projectRoot, '.discipline', 'packets', 'STEP_5_SLICE_PACKET_13.md')
     const completionPath = path.join(projectRoot, '.discipline', 'packets', 'SLICE_COMPLETION_PACKET_13.md')
-    const before = fs.readFileSync(progressPath, 'utf8')
+    const progressBefore = fs.readFileSync(progressPath, 'utf8')
+    const packetBefore = fs.readFileSync(packetPath, 'utf8')
 
+    // The injected op TRUNCATES the packet and only then fails, which is the order that matters: a
+    // failure before any effect proves nothing about a rollback.
     const failed = runTsxModule(
       [
+        `const fs = await import('node:fs')`,
         `const __out = {}`,
-        `const failing = { mark: () => ({ ok: false, reason: 'simulated: the packet could not be written' }) }`,
+        `const failing = { mark: () => { fs.writeFileSync(${JSON.stringify(packetPath)}, 'TRUNCATED BY A HALF-WRITTEN MARKER'); return { ok: false, reason: 'simulated: the marker write failed halfway' } } }`,
         `__out.result = await recordClosure(${JSON.stringify(projectRoot)}, '13', ${JSON.stringify(completionPath)}, { requireConsumption: true }, failing)`,
       ],
       { '{ recordClosure }': 'tools/discipline/update-progress.ts' },
     )
     expect(failed.result.ok).toBe(false)
-    expect(failed.result.reason).toMatch(/simulated/)
+    expect(failed.result.reason).toMatch(/halfway/)
     expect(failed.result.restored).toBe(true)
-    expect(fs.readFileSync(progressPath, 'utf8'), 'progress.md must be byte-identical when the consumption cannot be recorded').toBe(before)
-    expect(fs.readFileSync(packetPath, 'utf8')).not.toMatch(/status: consumed/)
+    expect(fs.readFileSync(progressPath, 'utf8'), 'progress.md must be byte-identical').toBe(progressBefore)
+    expect(fs.readFileSync(packetPath, 'utf8'), 'and so must the packet the marker half-wrote').toBe(packetBefore)
 
     // Positive control: the same call without the injected failure records BOTH halves.
     const recorded = runTsxModule(
@@ -1146,7 +1177,6 @@ describe('Phase-2 adapters + run reconciler', () => {
     )
     expect(recorded.result.ok, recorded.result.reason).toBe(true)
     expect(recorded.result.consumed).toBe(true)
-    expect(fs.readFileSync(progressPath, 'utf8')).not.toBe(before)
     expect(fs.readFileSync(progressPath, 'utf8')).toMatch(/Slice 13/)
     expect(fs.readFileSync(packetPath, 'utf8')).toMatch(/status: consumed/)
   }, 90000)
