@@ -999,6 +999,87 @@ describe('Phase-2 adapters + run reconciler', () => {
     fs.rmSync(repo, { recursive: true, force: true })
   })
 
+  // A run leases ONE slice. buildBuilderPrompt assembled without it, which is the one door that
+  // does not check identity, so the builder could be handed the generic packet or another slice's;
+  // and the plumbing read EVERY packet on disk, re-applying the blocks of runs long finished.
+  it('run: the prompt and the plumbing are scoped to the leased slice', () => {
+    const gitProbe = spawnSync('git', ['--version'], { encoding: 'utf8' })
+    if (gitProbe.status !== 0) return
+    const repo = makeRunFixtureRepo()
+    const packets = path.join(repo, '.discipline', 'packets')
+    fs.writeFileSync(path.join(repo, 'task_plan.md'), ['# task_plan.md', '', '## 4) Ready Slices', '',
+      '## Slice 1 - Feature', '#### Goal', 'x', '', '## Slice 2 - Other', '#### Goal', 'y', '', '## 5) Deferred / Later', '- none', ''].join('\n'), 'utf8')
+    fs.rmSync(path.join(packets, 'STEP_5_SLICE_PACKET.md'))
+    const slicePacket = (id: number, marker: string) => ['---', `slice: ${id}`, 'status: ready', '---', '', '# STEP_5_SLICE_PACKET', '', `SLICE: ${id}`, '',
+      '## Goal', `- ${marker}`, '## Scope', '- x', '## Contracts', '- x', '## Acceptance criteria', '- x', ''].join('\n')
+    fs.writeFileSync(path.join(packets, 'STEP_5_SLICE_PACKET_1.md'), slicePacket(1, 'ONLY_SLICE_ONE'), 'utf8')
+    fs.writeFileSync(path.join(packets, 'STEP_5_SLICE_PACKET_2.md'), slicePacket(2, 'ONLY_SLICE_TWO'), 'utf8')
+    // A completion packet left over from a run that finished long ago, carrying a patch of its own.
+    fs.writeFileSync(path.join(packets, 'SLICE_COMPLETION_PACKET_9.md'), ['# SLICE_COMPLETION_PACKET', '', 'SLICE: 9', '',
+      '## Outcome', '- done', '', '## Gates passed', '- GATE_STATE: passed', '', '## FINDINGS_APPEND_BLOCK', '',
+      'TARGET_FILE: findings.md', 'PATCH_MODE: append', 'ANCHOR: ## Decisions', '', '### CONTENT', '- STALE_PATCH_FROM_SLICE_9', ''].join('\n'), 'utf8')
+    spawnSync('git', ['add', '-A'], { cwd: repo, encoding: 'utf8' })
+    spawnSync('git', ['commit', '-q', '-m', 'two ready slices'], { cwd: repo, encoding: 'utf8' })
+
+    const res = spawnSync(process.execPath, [tsxCli, 'tools/discipline/run.ts', '--slice', '2', '--yes', '--no-open', '--project-dir', repo], {
+      cwd: repoRoot, env: { ...process.env, DISCIPLINE_FAKE_PROVIDER_CMD: fakeCli, FAKE_MODE: 'build', FAKE_BUILD_DIR: repo }, encoding: 'utf8',
+    })
+    const out = getOutput(res)
+    expect(res.status, out).toBe(0)
+
+    const pasteReady = fs.readdirSync(path.join(repo, '.discipline', 'paste-ready'))
+    expect(pasteReady, `found: ${pasteReady.join(', ')}`).toContain('step-5-2-input.md')
+    expect(pasteReady, 'the slice-less assembly is what handed the builder another slice').not.toContain('step-5-input.md')
+    const handoff = fs.readFileSync(path.join(repo, '.discipline', 'paste-ready', 'step-5-2-input.md'), 'utf8')
+    expect(handoff).toMatch(/ONLY_SLICE_TWO/)
+    expect(handoff).not.toMatch(/ONLY_SLICE_ONE/)
+
+    // The old packet's patch belongs to a run that already happened; this one does not re-apply it.
+    expect(fs.readFileSync(path.join(repo, 'findings.md'), 'utf8')).not.toMatch(/STALE_PATCH_FROM_SLICE_9/)
+    // The fake builder closes "Slice 1", not the slice this run leased: nothing is recorded.
+    expect(out).toMatch(/No SLICE_COMPLETION_PACKET for slice 2/)
+    expect(fs.readFileSync(path.join(repo, 'progress.md'), 'utf8')).not.toMatch(/Slice 9/)
+    fs.rmSync(repo, { recursive: true, force: true })
+  }, 120000)
+
+  // A packet is work only while its status is ready, the same rule the watcher's Step 5 selection
+  // applies. Without it a run could implement a draft, or re-implement a slice already consumed.
+  it('run: refuses a slice packet that is not ready', () => {
+    const gitProbe = spawnSync('git', ['--version'], { encoding: 'utf8' })
+    if (gitProbe.status !== 0) return
+    for (const [status, expected] of [['draft', /"draft", not "ready"/], ['consumed', /"consumed", not "ready"/], [null, /\(none declared\), not "ready"/]] as Array<[string | null, RegExp]>) {
+      const repo = makeRunFixtureRepo()
+      fs.writeFileSync(
+        path.join(repo, '.discipline', 'packets', 'STEP_5_SLICE_PACKET.md'),
+        ['# STEP_5_SLICE_PACKET', '', ...(status ? [`STATUS: ${status}`, ''] : []), '## Goal', 'x', '## Scope', '- x', '## Contracts', '- x', '## Acceptance criteria', '- x', ''].join('\n'),
+        'utf8',
+      )
+      spawnSync('git', ['add', '-A'], { cwd: repo, encoding: 'utf8' })
+      spawnSync('git', ['commit', '-q', '-m', 'status'], { cwd: repo, encoding: 'utf8' })
+      const res = runTsx('tools/discipline/run.ts', ['--slice', '1', '--dry-run', '--project-dir', repo])
+      expect(res.status, getOutput(res)).toBe(2)
+      expect(getOutput(res)).toMatch(expected)
+      fs.rmSync(repo, { recursive: true, force: true })
+    }
+  }, 120000)
+
+  // A dry run exists to answer "what would this run do?". Swallowing the assembly failure answered
+  // "0 prompt chars" and exited GREEN, which reads as a plan that is ready to go.
+  it('run --dry-run: reports an assembly failure instead of printing an empty prompt', () => {
+    const gitProbe = spawnSync('git', ['--version'], { encoding: 'utf8' })
+    if (gitProbe.status !== 0) return
+    const repo = makeRunFixtureRepo()
+    // Make the handoff unwritable in the most portable way there is: a directory in its place.
+    for (const name of ['step-5-input.md', 'step-5-1-input.md']) {
+      fs.mkdirSync(path.join(repo, '.discipline', 'paste-ready', name), { recursive: true })
+    }
+    const res = runTsx('tools/discipline/run.ts', ['--slice', '1', '--dry-run', '--project-dir', repo])
+    expect(res.status, getOutput(res)).toBe(2)
+    expect(getOutput(res)).toMatch(/Could not assemble the paste-ready for slice 1/)
+    expect(getOutput(res)).toMatch(/the plan is not green/)
+    fs.rmSync(repo, { recursive: true, force: true })
+  }, 60000)
+
   it('run: refuses a dirty tree without --allow-dirty (exit 2)', () => {
     const gitProbe = spawnSync('git', ['--version'], { encoding: 'utf8' })
     if (gitProbe.status !== 0) return
