@@ -3014,6 +3014,91 @@ describe('Step 5 packet schema v2 + migration', () => {
     expect(worse.result.plans[0].reason).not.toMatch(/Nothing was left behind/)
   }, 120000)
 
+  // Writing the word EVIDENCE was a way to satisfy the section that asks for evidence: the line was
+  // judged whole, so a label with nothing after it, or with a non-answer after it, counted. And a
+  // numbered or checkbox marker was not stripped at all, so `1. none` and `- [ ] none` passed.
+  it('a label is not an answer, and every list marker is formatting', () => {
+    const evidence = (replacement: string) => V2_PACKET.replace('- AC1 failed against the previous build: the empty state was never rendered.', replacement)
+    const gut = (packet: string, section: string, replacement: string) =>
+      packet.replace(new RegExp('## ' + section + '\\n[^#]*', 'm'), '## ' + section + '\n' + replacement + '\n\n')
+    const out = readCases({
+      bareLabel: evidence('- EVIDENCE:'),
+      labelledNone: evidence('- EVIDENCE: none'),
+      labelledNa: evidence('- RATIONALE: n/a'),
+      numbered: evidence('1. none'),
+      numberedParen: evidence('1) n/a'),
+      taskList: evidence('- [ ] none'),
+      taskListDone: evidence('- [x] not applicable'),
+      numberedSection: gut(V2_PACKET, 'Goal', '1. none'),
+      labelledSection: gut(V2_PACKET, 'Contracts', '- CONTRACTS: none'),
+      // A labelled line with a real value IS an answer; the label is not the problem.
+      labelledReal: evidence('- EVIDENCE: tests/list.test.ts:12 failed before the fix'),
+      numberedReal: evidence('1. AC1 failed against the previous build.'),
+      taskListReal: evidence('- [x] AC1 failed against the previous build.'),
+    })
+    for (const name of ['bareLabel', 'labelledNone', 'labelledNa', 'numbered', 'numberedParen', 'taskList', 'taskListDone']) {
+      expect(out[name].errors.join('; '), name).toMatch(/declares METHOD: red-evidence and shows nothing/)
+    }
+    expect(out.numberedSection.errors.join('; ')).toMatch(/"Goal" is empty/)
+    expect(out.labelledSection.errors.join('; ')).toMatch(/"Contracts" is empty/)
+    for (const name of ['labelledReal', 'numberedReal', 'taskListReal']) {
+      expect(out[name].errors, name + ' is a real answer').toEqual([])
+    }
+  }, 60000)
+
+  // A rollback that could not be completed leaves a file in a state nobody can describe, and the
+  // command has just told the operator not to run it again until they look. Carrying on to mutate
+  // the NEXT packet in the same breath makes that instruction impossible to follow.
+  it('migrate-packets: an incomplete rollback stops the batch', () => {
+    const packet = (slice: number) => ['# STEP_5_SLICE_PACKET', '', 'SLICE: ' + slice, '', '## Goal', '- slice ' + slice, ''].join('\n')
+    const projectRoot = createDisciplineProject({
+      'STEP_5_SLICE_PACKET_13.md': packet(13),
+      'STEP_5_SLICE_PACKET_14.md': packet(14),
+    })
+    const packets = path.join(projectRoot, '.discipline', 'packets')
+    const secondBefore = fs.readFileSync(path.join(packets, 'STEP_5_SLICE_PACKET_14.md'), 'utf8')
+
+    const out = runTsxModule(
+      [
+        'const __out = {}',
+        "const fs = await import('node:fs')",
+        'let poisoned = false',
+        'const ops = {',
+        '  write: (file, data, exclusive) => {',
+        "    if (poisoned) throw new Error('simulated: the restore failed too')",
+        "    fs.writeFileSync(file, data, exclusive ? { flag: 'wx' } : {})",
+        "    if (file.endsWith('STEP_5_SLICE_PACKET_13.md')) { poisoned = true; throw new Error('simulated failure after rewriting slice 13') }",
+        '  },',
+        '  remove: (file) => fs.rmSync(file),',
+        '}',
+        `__out.result = migratePackets(${JSON.stringify(projectRoot)}, { write: true, stamp: 'T' }, ops)`,
+      ],
+      { '{ migratePackets }': 'tools/discipline/migrate-packets.ts' },
+    )
+
+    expect(out.result.ok).toBe(false)
+    const [first, second] = out.result.plans
+    expect(first.file).toBe('STEP_5_SLICE_PACKET_13.md')
+    expect(first.rollback).toBe('incomplete')
+    // The second packet is NOT migrated, and it says so instead of being silently skipped.
+    expect(second.file).toBe('STEP_5_SLICE_PACKET_14.md')
+    expect(second.action).toBe('not-run')
+    expect(second.reason).toMatch(/the batch stopped after a rollback that could not be completed/)
+    expect(fs.readFileSync(path.join(packets, 'STEP_5_SLICE_PACKET_14.md'), 'utf8'), 'the packet after the failure must be byte-identical').toBe(secondBefore)
+    expect(fs.existsSync(path.join(packets, 'legacy', 'STEP_5_SLICE_PACKET_14.14.md'))).toBe(false)
+
+    // A refusal whose rollback DID complete is different: nothing was lost, so the batch goes on.
+    const healthy = createDisciplineProject({
+      'STEP_5_SLICE_PACKET.md': ['# STEP_5_SLICE_PACKET', '', '## Goal', '- names no slice', ''].join('\n'),
+      'STEP_5_SLICE_PACKET_14.md': packet(14),
+    })
+    const carried = runTsx('tools/discipline/migrate-packets.ts', ['--project-dir', healthy, '--write', '--stamp', 'T'])
+    expect(carried.status, getOutput(carried)).not.toBe(0)
+    expect(getOutput(carried)).toMatch(/REFUSED, it names no slice/)
+    expect(getOutput(carried)).toMatch(/STEP_5_SLICE_PACKET_14\.md: migrated/)
+    expect(getOutput(carried)).not.toMatch(/NOT RUN/)
+  }, 120000)
+
   // Migration says what it would do and touches nothing until asked; the original is kept with its hash.
   it('migrate-packets: dry-run writes nothing, --write keeps the original and its hash, and is idempotent', () => {
     const legacyPacket = ['# STEP_5_SLICE_PACKET', '', 'STATUS: ready', 'SLICE: 13', '', '## Goal', '- x', '## Scope', '- x', '## Contracts', '- x', '## Acceptance criteria', '- x', ''].join('\n')
