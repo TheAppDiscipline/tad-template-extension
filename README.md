@@ -15,7 +15,7 @@ Discipline Loop Browser Extension template. **Chromium + Firefox** cross-browser
 - **Gates:** lint + tsc + tests + tokens + secrets + `check-manifest` (validates MV3) + `check-bundle-extension` (zip < 10 MB)
 - **Canonical Discipline Loop files:** `discipline.md`, `task_plan.md`, `findings.md`, `progress.md`, `progress_archive.md`, `AGENTS.md` (agent instructions; `CLAUDE.md` is a stub that imports it for Claude Code)
 - **`.discipline/` folder** ready for packets, patches, paste-ready, run-log
-- **Complete `tools/discipline/`** (ported from `tad-template-web`), including measured slice metrics and the deterministic compact state view. Run `npm run discipline:metrics -- --slice S1 --base main` and `npm run discipline:state-view` (or `-- --json`) via `tsx`.
+- **Complete `tools/discipline/`** (ported from `tad-template-web`), including measured slice metrics and the deterministic compact state view. Run `npm run discipline:metrics -- --slice S1 --base main`, or `npm run --silent discipline -- state-view --json` for JSON-only stdout (`npm.cmd` in PowerShell).
 - **Placeholder icons 16/48/128 PNG** in `public/icon/` (blue circle on gray). Replace before the first upload to CWS/AMO.
 
 ## Getting Started

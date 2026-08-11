@@ -2571,7 +2571,8 @@ describe('Step 5 packet schema v2 + migration', () => {
     '- Open the app with an empty store and check the empty state.',
     '',
     '## Estimate',
-    '- 120 lines of production code.',
+    '- MAX_CHANGED_LINES: 120',
+    '- BASIS: no comparable history; one screen, its state logic, tests, and fixtures bound the estimate.',
     '',
   ].join('\n')
 
@@ -3301,7 +3302,8 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
     '- Open the app with an empty store and check the empty state.',
     '',
     '## Estimate',
-    '- 120 lines of production code.',
+    '- MAX_CHANGED_LINES: 120',
+    '- BASIS: no comparable history; one screen, its state logic, tests, and fixtures bound the estimate.',
     '',
   ].join('\n')
 
