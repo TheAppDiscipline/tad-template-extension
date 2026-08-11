@@ -19,7 +19,7 @@
   "base": ["discipline:provider:check"],
   "surfaces": {
     "ui": ["lint", "compile", "test", "check-tokens", "gate:visual"],
-    "authenticated-ui": ["lint", "compile", "test", "check-tokens", "check-secrets", "check-queries", "gate:visual"],
+    "authenticated-ui": ["lint", "compile", "test", "check-tokens", "check-secrets", "check-queries", "gate:visual", "e2e:auth"],
     "backend": ["lint", "compile", "test", "check-secrets", "check-https", "check-queries"],
     "schema": ["test", "check-db-types"],
     "permissions": ["test", "check-secrets", "build", "check-manifest"],

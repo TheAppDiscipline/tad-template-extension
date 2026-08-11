@@ -21,6 +21,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check-tokens": "node tools/check_no_hex_colors.js",
+    "e2e:auth": "node tools/check_authenticated_ui.js",
     "check-secrets": "node tools/check_no_secrets_in_frontend.js",
     "check-https": "node tools/check_https_redirect.js",
     "check-manifest": "node tools/check_manifest.js",
