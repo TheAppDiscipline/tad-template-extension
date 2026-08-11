@@ -2572,7 +2572,7 @@ describe('Step 5 packet schema v2 + migration', () => {
     '',
     '## Estimate',
     '- MAX_CHANGED_LINES: 120',
-    '- BASIS: no comparable history; one screen, its state logic, tests, and fixtures bound the estimate.',
+    '- BASIS: no-history; planned_files=src/screens/list.tsx,tests/list.test.tsx; risks=new state branch and fixture compatibility',
     '',
   ].join('\n')
 
@@ -3303,7 +3303,7 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
     '',
     '## Estimate',
     '- MAX_CHANGED_LINES: 120',
-    '- BASIS: no comparable history; one screen, its state logic, tests, and fixtures bound the estimate.',
+    '- BASIS: no-history; planned_files=src/screens/list.tsx,tests/list.test.tsx; risks=new state branch and fixture compatibility',
     '',
   ].join('\n')
 
