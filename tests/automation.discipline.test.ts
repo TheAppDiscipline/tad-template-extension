@@ -3846,4 +3846,42 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
     ])
   }, 60000)
 
+
+  // gate:strict is EXPECTED_FAIL on a pristine scaffold: check-extension-release refuses the empty
+  // `matches: []` the template ships, and it must keep refusing it. The risk with an "it always
+  // fails here" exemption is that nobody notices when it starts failing for a REAL reason, so this
+  // pins both halves: the scaffold fails, and a hydrated project passes.
+  it('check-extension-release: the pristine scaffold fails, a hydrated project passes', () => {
+    const run = (dir: string) => spawnSync(process.execPath, [path.join(repoRoot, 'tools', 'check_extension_release_ready.js')], { cwd: dir, encoding: 'utf8' })
+
+    // (a) The scaffold as shipped. This is the EXPECTED_FAIL in the phase's gate matrix.
+    const pristine = run(repoRoot)
+    expect(pristine.status, getOutput(pristine)).not.toBe(0)
+    expect(getOutput(pristine)).toMatch(/matches: \[\]/)
+
+    // (b) The same check against a project that did what the message asks.
+    const hydrated = fs.mkdtempSync(path.join(os.tmpdir(), 'extension-hydrated-'))
+    fs.mkdirSync(path.join(hydrated, 'entrypoints'), { recursive: true })
+    const content = fs.readFileSync(path.join(repoRoot, 'entrypoints', 'content.ts'), 'utf8')
+    fs.writeFileSync(
+      path.join(hydrated, 'entrypoints', 'content.ts'),
+      content.replace(/matches\s*:\s*\[[\s\S]*?\]/m, "matches: ['https://example.com/*']"),
+      'utf8',
+    )
+    const ready = run(hydrated)
+    expect(ready.status, getOutput(ready)).toBe(0)
+    expect(getOutput(ready)).toMatch(/release scope is explicit/)
+
+    // And <all_urls> is still refused without the documented opt-in, so "hydrated" cannot mean
+    // "asked for everything".
+    fs.writeFileSync(
+      path.join(hydrated, 'entrypoints', 'content.ts'),
+      content.replace(/matches\s*:\s*\[[\s\S]*?\]/m, "matches: ['<all_urls>']"),
+      'utf8',
+    )
+    const broad = run(hydrated)
+    expect(broad.status, getOutput(broad)).not.toBe(0)
+    expect(getOutput(broad)).toMatch(/all_urls/)
+  }, 60000)
+
 })
