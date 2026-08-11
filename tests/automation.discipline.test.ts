@@ -3794,35 +3794,16 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
 
   // `authenticated-ui` routes here. The check is deliberately narrow: it proves an authenticated test
   // EXISTS where the runner will execute it, and refuses the two ways that verification goes missing.
-  it('check-authenticated-ui: no auth, or no authenticated test, is a failure', () => {
-    const project = (authMode: string, files: Record<string, string> = {}) => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-ui-'))
-      fs.writeFileSync(path.join(dir, 'discipline.md'),
-        ['# discipline.md', '', '## 0) Profile', '- PROFILE: LITE', `- AUTH_MODE: ${authMode}`, ''].join('\n'), 'utf8')
-      for (const [rel, content] of Object.entries(files)) {
-        fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true })
-        fs.writeFileSync(path.join(dir, rel), content, 'utf8')
-      }
-      return dir
-    }
-    const run = (dir: string) => spawnSync(process.execPath, [path.join(repoRoot, 'tools', 'check_authenticated_ui.js')], { cwd: dir, encoding: 'utf8' })
+  const REAL_AUTH_TEST = [
+    "import { test, expect } from '@playwright/test'",
+    '',
+    "test('the signed-in dashboard renders', async ({ page }) => {",
+    "  await page.goto('/')",
+    '  await expect(page).toHaveTitle(/./)',
+    '})',
+    '',
+  ].join('\n')
 
-    const none = run(project('NONE'))
-    expect(none.status, getOutput(none)).not.toBe(0)
-    expect(getOutput(none)).toMatch(/AUTH_MODE: NONE/)
-
-    const empty = run(project('MAGIC_LINK'))
-    expect(empty.status, getOutput(empty)).not.toBe(0)
-    expect(getOutput(empty)).toMatch(/no authenticated test/)
-
-    const ready = run(project('MAGIC_LINK', { 'tests/e2e/authenticated/signed-in.spec.ts': 'signed-in fixture\n' }))
-    expect(ready.status, getOutput(ready)).toBe(0)
-    expect(getOutput(ready)).toMatch(/1 authenticated test/)
-
-    // A test filed somewhere else does not count: the runner would never open it.
-    const misplaced = run(project('MAGIC_LINK', { 'tests/e2e/signed-in.spec.ts': 'signed-in fixture\n' }))
-    expect(misplaced.status, getOutput(misplaced)).not.toBe(0)
-  }, 60000)
 
   // The hook exempted ALL of `.discipline/`, so editing the gate MAP after the gate ended the session
   // without re-verifying anything. Only generated state is exempt now, path by path.
@@ -3883,5 +3864,68 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
     expect(broad.status, getOutput(broad)).not.toBe(0)
     expect(getOutput(broad)).toMatch(/all_urls/)
   }, 60000)
+
+
+  // A file with the right extension is not a test. The positive control used to write the words
+  // "signed-in fixture" into a .spec.ts and call it proof; an empty file and a file holding only a
+  // comment passed just as well. The RUNNER is now asked how many tests it finds, and zero fails.
+  it('check-authenticated-ui: files are not tests, and the runner is what counts them', () => {
+    const fixtures = path.join(repoRoot, 'tests', '.tmp-auth-fixtures')
+    const project = (name: string, content: string | null, authMode = 'MAGIC_LINK') => {
+      const dir = path.join(fixtures, name)
+      fs.mkdirSync(path.join(dir, 'tests', 'e2e', 'authenticated'), { recursive: true })
+      fs.writeFileSync(path.join(dir, 'discipline.md'),
+        ['# discipline.md', '', '## 0) Profile', '- PROFILE: LITE', `- AUTH_MODE: ${authMode}`, ''].join('\n'), 'utf8')
+      if (content !== null) fs.writeFileSync(path.join(dir, 'tests', 'e2e', 'authenticated', 'signed-in.spec.ts'), content, 'utf8')
+      return dir
+    }
+    const run = (dir: string) => spawnSync(process.execPath, [path.join(repoRoot, 'tools', 'check_authenticated_ui.js'), '--project-dir', dir],
+      { cwd: repoRoot, encoding: 'utf8' })
+
+    try {
+      const none = run(project('none', null))
+      expect(none.status, getOutput(none)).not.toBe(0)
+      expect(getOutput(none)).toMatch(/no authenticated test under/)
+
+      const empty = run(project('empty', ''))
+      expect(empty.status, getOutput(empty)).not.toBe(0)
+      expect(getOutput(empty)).toMatch(/could not list any test|found 0 tests/)
+
+      const comment = run(project('comment', '// TODO: write the signed-in test\n'))
+      expect(comment.status, getOutput(comment)).not.toBe(0)
+      expect(getOutput(comment)).toMatch(/could not list any test|found 0 tests/)
+
+      // Prose in a .spec.ts, which is what the previous positive control wrote.
+      const prose = run(project('prose', 'signed-in fixture\n'))
+      expect(prose.status, getOutput(prose)).not.toBe(0)
+
+      // A real test. This is the only shape that passes.
+      const real = run(project('real', [
+        "import { test, expect } from '@playwright/test'",
+        '',
+        "test('the signed-in dashboard renders', async ({ page }) => {",
+        "  await page.goto('/')",
+        '  await expect(page).toHaveTitle(/./)',
+        '})',
+        '',
+      ].join('\n')))
+      expect(real.status, getOutput(real)).toBe(0)
+      expect(getOutput(real)).toMatch(/1 test\(s\)/)
+
+      // AUTH_MODE: NONE means nothing is behind a login, so declaring the surface contradicts the project.
+      const none2 = run(project('no-auth', REAL_AUTH_TEST, 'NONE'))
+      expect(none2.status, getOutput(none2)).not.toBe(0)
+      expect(getOutput(none2)).toMatch(/AUTH_MODE: NONE/)
+
+      // A real test, filed where the runner does not look, is not the authenticated suite.
+      const misplaced = project('misplaced', null)
+      fs.writeFileSync(path.join(misplaced, 'tests', 'e2e', 'signed-in.spec.ts'), REAL_AUTH_TEST, 'utf8')
+      const off = run(misplaced)
+      expect(off.status, getOutput(off)).not.toBe(0)
+      expect(getOutput(off)).toMatch(/no authenticated test under/)
+    } finally {
+      fs.rmSync(fixtures, { recursive: true, force: true })
+    }
+  }, 180000)
 
 })
