@@ -3912,6 +3912,27 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
       expect(real.status, getOutput(real)).toBe(0)
       expect(getOutput(real)).toMatch(/1 test\(s\)/)
 
+      // A runner that exits 0 and reports no count tells us nothing, and the file total is the very
+      // thing this check exists to stop standing in for it.
+      const withRunner = (dir: string, command: string) => spawnSync(
+        process.execPath,
+        [path.join(repoRoot, 'tools', 'check_authenticated_ui.js'), '--project-dir', dir, '--discover-command', command],
+        { cwd: repoRoot, encoding: 'utf8' },
+      )
+      const populated = project('counted', REAL_AUTH_TEST)
+
+      const silent = withRunner(populated, 'node -e "console.log(\'Listing tests:\')"')
+      expect(silent.status, getOutput(silent)).not.toBe(0)
+      expect(getOutput(silent)).toMatch(/reported no test count/)
+
+      const zero = withRunner(populated, 'node -e "console.log(\'Total: 0 tests in 0 files\')"')
+      expect(zero.status, getOutput(zero)).not.toBe(0)
+      expect(getOutput(zero)).toMatch(/found 0 tests/)
+
+      const counted = withRunner(populated, 'node -e "console.log(\'Total: 3 tests in 1 file\')"')
+      expect(counted.status, getOutput(counted)).toBe(0)
+      expect(getOutput(counted)).toMatch(/3 test\(s\)/)
+
       // AUTH_MODE: NONE means nothing is behind a login, so declaring the surface contradicts the project.
       const none2 = run(project('no-auth', REAL_AUTH_TEST, 'NONE'))
       expect(none2.status, getOutput(none2)).not.toBe(0)
