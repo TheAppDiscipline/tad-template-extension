@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 // Extension runs its tests with vitest (not node:test), so this file
@@ -24,6 +25,26 @@ function runTsx(script: string, args: string[] = []) {
 
 function out(r: ReturnType<typeof runTsx>): string {
   return `${r.stdout}${r.stderr}`
+}
+
+function patchBatchDigest(projectRoot: string): string {
+  const pendingDir = path.join(projectRoot, '.discipline', 'patches', 'pending')
+  const files = fs.readdirSync(pendingDir).filter((file) => file.endsWith('.md')).sort()
+  const digest = createHash('sha256')
+  digest.update('discipline.patch_batch.v1\0')
+  for (const file of files) {
+    digest.update(file)
+    digest.update('\0')
+    digest.update(fs.readFileSync(path.join(pendingDir, file)))
+    digest.update('\0')
+  }
+  return digest.digest('hex')
+}
+
+function runApprovedPatch(projectRoot: string) {
+  return runTsx('tools/discipline/apply-patch.ts', [
+    '--project-dir', projectRoot, '--approve-sha', patchBatchDigest(projectRoot),
+  ])
 }
 
 function createPatchProject(): string {
@@ -48,7 +69,7 @@ describe('anchor NFC normalization + clipboard command (parity with the other la
       'utf8',
     )
 
-    const result = runTsx('tools/discipline/apply-patch.ts', ['--project-dir', projectRoot])
+    const result = runApprovedPatch(projectRoot)
     expect(result.status, out(result)).toBe(0)
     expect(fs.readFileSync(progressPath, 'utf8')).toMatch(/replaced via NFC-normalized anchor/)
   }, 20000)
@@ -65,7 +86,7 @@ describe('anchor NFC normalization + clipboard command (parity with the other la
       'utf8',
     )
 
-    const result = runTsx('tools/discipline/apply-patch.ts', ['--project-dir', projectRoot])
+    const result = runApprovedPatch(projectRoot)
     expect(result.status, out(result)).not.toBe(0)
     expect(out(result)).toMatch(/Duplicate anchor/)
     expect(fs.readFileSync(progressPath, 'utf8')).not.toMatch(/must not apply/)
@@ -107,7 +128,7 @@ describe('anchor NFC normalization + clipboard command (parity with the other la
     )
     const findingsBefore = fs.readFileSync(path.join(projectRoot, 'findings.md'), 'utf8')
 
-    const result = runTsx('tools/discipline/apply-patch.ts', ['--project-dir', projectRoot])
+    const result = runApprovedPatch(projectRoot)
     expect(result.status, out(result)).not.toBe(0)
     expect(out(result)).toMatch(/Rollback complete/)
 
@@ -146,7 +167,7 @@ describe('anchor NFC normalization + clipboard command (parity with the other la
     )
     const findingsBefore = fs.readFileSync(path.join(projectRoot, 'findings.md'), 'utf8')
 
-    const result = runTsx('tools/discipline/apply-patch.ts', ['--project-dir', projectRoot])
+    const result = runApprovedPatch(projectRoot)
     expect(result.status, out(result)).not.toBe(0)
     expect(out(result)).toMatch(/Rollback complete/)
     expect(fs.readFileSync(path.join(projectRoot, 'findings.md'), 'utf8')).toBe(findingsBefore)
@@ -173,8 +194,8 @@ describe('anchor NFC normalization + clipboard command (parity with the other la
       script,
       `// Freeze the clock so every backup in the batch wants the same base name.
 Date.now = () => 1780000000000
-const { applyPatches } = await import('${pathToFileURL(path.join(repoRoot, 'tools', 'discipline', 'apply-patch.ts')).href}')
-try { await applyPatches(${JSON.stringify(projectRoot)}) } catch (err) { console.log('FAILED:' + err.message) }
+const { applyPatches, pendingPatchBatchDigest } = await import('${pathToFileURL(path.join(repoRoot, 'tools', 'discipline', 'apply-patch.ts')).href}')
+try { await applyPatches(${JSON.stringify(projectRoot)}, false, undefined, pendingPatchBatchDigest(${JSON.stringify(projectRoot)})) } catch (err) { console.log('FAILED:' + err.message) }
 `,
       'utf8',
     )
@@ -202,7 +223,7 @@ try { await applyPatches(${JSON.stringify(projectRoot)}) } catch (err) { console
       '# Repeated Anchor\n\nTARGET_FILE: progress.md\nPATCH_MODE: replace_section\nANCHOR: ## Local Section\n\n### CONTENT\n## Local Section\nSECTION_NO_DUPLICATE_HEADING\n',
       'utf8',
     )
-    const sectionResult = runTsx('tools/discipline/apply-patch.ts', ['--project-dir', section])
+    const sectionResult = runApprovedPatch(section)
     expect(sectionResult.status, out(sectionResult)).toBe(0)
     expect(out(sectionResult)).toMatch(/CONTENT repeated the anchor/)
     const sectionMd = fs.readFileSync(path.join(section, 'progress.md'), 'utf8')
@@ -216,7 +237,7 @@ try { await applyPatches(${JSON.stringify(projectRoot)}) } catch (err) { console
       '# Block Keeps Anchor\n\nTARGET_FILE: progress.md\nPATCH_MODE: replace_block\nANCHOR: ## Local Section\n\n### CONTENT\n## Local Section\nBLOCK_KEEPS_HEADING\n',
       'utf8',
     )
-    const blockResult = runTsx('tools/discipline/apply-patch.ts', ['--project-dir', block])
+    const blockResult = runApprovedPatch(block)
     expect(blockResult.status, out(blockResult)).toBe(0)
     expect(out(blockResult)).not.toMatch(/CONTENT repeated the anchor/)
     const blockMd = fs.readFileSync(path.join(block, 'progress.md'), 'utf8')
@@ -239,7 +260,7 @@ try { await applyPatches(${JSON.stringify(projectRoot)}) } catch (err) { console
     fs.writeFileSync(
       script,
       `import fs from 'node:fs'
-import { applyPatches } from '${pathToFileURL(path.join(repoRoot, 'tools', 'discipline', 'apply-patch.ts')).href}'
+import { applyPatches, pendingPatchBatchDigest } from '${pathToFileURL(path.join(repoRoot, 'tools', 'discipline', 'apply-patch.ts')).href}'
 const ops = {
   existsSync: (p) => fs.existsSync(p),
   copyFileSync: (src, dest) => {
@@ -248,7 +269,7 @@ const ops = {
   },
   renameSync: (src, dest) => { fs.renameSync(src, dest) },
 }
-try { await applyPatches(${JSON.stringify(projectRoot)}, false, ops) } catch (err) { console.log('FAILED:' + err.message) }
+try { await applyPatches(${JSON.stringify(projectRoot)}, false, ops, pendingPatchBatchDigest(${JSON.stringify(projectRoot)})) } catch (err) { console.log('FAILED:' + err.message) }
 `,
       'utf8',
     )
@@ -282,10 +303,10 @@ try { await applyPatches(${JSON.stringify(projectRoot)}, false, ops) } catch (er
     fs.writeFileSync(
       script,
       `import fs from 'node:fs'
-import { applyPatches, PatchBatchError } from '${pathToFileURL(path.join(repoRoot, 'tools', 'discipline', 'apply-patch.ts')).href}'
+import { applyPatches, PatchBatchError, pendingPatchBatchDigest } from '${pathToFileURL(path.join(repoRoot, 'tools', 'discipline', 'apply-patch.ts')).href}'
 let code = 0
 try {
-  await applyPatches(${JSON.stringify(projectRoot)})
+  await applyPatches(${JSON.stringify(projectRoot)}, false, undefined, pendingPatchBatchDigest(${JSON.stringify(projectRoot)}))
   code = 99
 } catch (err) {
   console.log('CAUGHT:' + (err instanceof PatchBatchError ? 'PatchBatchError' : err?.constructor?.name))

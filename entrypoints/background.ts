@@ -1,4 +1,4 @@
-import { defineBackground } from 'wxt/sandbox'
+import { defineBackground } from 'wxt/utils/define-background'
 import type { Message } from '../src/lib/messaging'
 
 type StorageMessage = Extract<Message, { type: 'GET_STORAGE' | 'SET_STORAGE' }>

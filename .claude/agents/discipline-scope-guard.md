@@ -20,7 +20,7 @@ You are the Discipline Loop Scope Guard subagent for browser extensions per NN 1
 
 ## Extension-specific considerations
 
-- Changes to `public/manifest.json` are always flagged for review — manifest changes often have CWS/AMO submission implications (new permissions require user re-consent and may block auto-update).
+- Changes to `public/manifest.json` are always flagged for review - manifest changes often have CWS/AMO submission implications (new permissions require user re-consent and may block auto-update).
 - Cross-entry changes (e.g., slice declared for popup but also modifies content script) are flagged as potentially out-of-scope.
 - Adding new permissions (`permissions`, `host_permissions`) without updating the slice contract is always out-of-scope.
 

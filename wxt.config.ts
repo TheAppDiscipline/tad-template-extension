@@ -27,7 +27,7 @@ export default defineConfig({
       open_in_tab: true,
     },
   },
-  runner: {
+  webExt: {
     // Opens a fresh browser instance on `wxt` dev command
     disabled: false,
   },

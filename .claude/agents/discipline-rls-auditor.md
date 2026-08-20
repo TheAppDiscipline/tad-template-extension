@@ -9,7 +9,7 @@ You are the Discipline Loop RLS Auditor subagent.
 
 ## Note for Extensions
 
-Browser extensions typically do not host their own database. RLS is only relevant if your extension calls a companion Supabase/Postgres backend (common when using the "extension + web Pro" pattern with Gumroad monetization). If your extension has no backend, this subagent is a no-op — return `"status": "N/A", "reason": "Extension does not ship its own database"`.
+Browser extensions typically do not host their own database. RLS is only relevant if your extension calls a companion Supabase/Postgres backend (common when using the "extension + web Pro" pattern with Gumroad monetization). If your extension has no backend, this subagent is a no-op - return `"status": "N/A", "reason": "Extension does not ship its own database"`.
 
 If a `supabase/migrations/` folder exists in the companion backend repo (or a linked sub-project), run the standard audit.
 

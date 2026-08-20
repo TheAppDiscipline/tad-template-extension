@@ -2,9 +2,34 @@
 
 Discipline Loop Browser Extension template. **Chromium + Firefox** cross-browser via **WXT + React + TypeScript** under Manifest V3.
 
-**Part of The App Discipline.** This is the public, MIT-licensed template (see `LICENSE`). The complete Discipline Loop methodology and vault (full system, playbooks, prompts, and extended materials) are a separate product, sold separately at <https://theappdiscipline.gumroad.com/l/tad>, and are **not** included in this repository.
+**Part of The App Discipline.** This template is MIT-licensed (see `LICENSE`) and can be used on its own. The proprietary Discipline Loop vault is not covered by this repository's MIT license. If you received the paid bundle, the vault is the sibling folder `The App Discipline Vault/`; otherwise, verify the current offer and availability in the seller's checkout before relying on it.
 
 **Template release:** v1.0.0. When you create a real extension from this template, keep strict semver in `package.json`; the Chrome Web Store and Firefox AMO require uploading a higher version than the previous one on each upload.
+
+## Inicio rápido desde el bundle
+
+Usa esta ruta si recibiste `Templates/tad-template-extension` dentro del bundle de The App Discipline:
+
+1. Copia esta carpeta completa a una carpeta de trabajo nueva. No trabajes dentro del bundle ni combines la copia con un proyecto anterior.
+2. Abre una terminal en la copia. El directorio correcto contiene `package.json`.
+3. Ejecuta, en orden:
+
+```bash
+npm install
+npm run discipline:hydrate -- --lane EXTENSION --profile LITE --backend LOCAL_ONLY --auth NONE --sync NONE
+npm run discipline:status
+npm run gate
+```
+
+En Windows PowerShell usa `npm.cmd` en lugar de `npm`. Si ves `npm.ps1 cannot be loaded`, repite el mismo comando con `npm.cmd`; no necesitas cambiar la política del sistema.
+
+**Resultado esperado:** hydrate informa `Project hydrated`, status termina en `Status: OK` y gate vuelve al prompt sin error después de generar builds Chromium y Firefox. El gate no demuestra instalación manual, interacción por teclado, lector de pantalla, permisos reales ni aprobación de Chrome Web Store o Firefox AMO.
+
+**Siguiente prueba manual:** corre `npm run dev`, usa el navegador que abra WXT y prueba popup, options y permisos. Antes de publicar reemplaza iconos, nombre, descripción y permisos; una cuenta de tienda y su decisión de upload siguen siendo humanas.
+
+**Si falla:** conserva el primer error rojo y el comando exacto. Corre `npm run discipline:doctor` (`npm.cmd run discipline:doctor` en PowerShell), corrige una causa a la vez y repite. Después de dos intentos sin información nueva, detente y registra el blocker en `progress.md`.
+
+Para volver otro día, lee `progress.md` y corre `npm run discipline:status`. `LITE` es local; `LAUNCH` requiere evidencia antes de abrir a terceros; `PROD` requiere operación comercial verificada. La IA no decide por ti alcance, costos, credenciales, permisos, legal/fiscal, cobros ni publicación.
 
 ## What this template includes
 
@@ -55,7 +80,7 @@ npm run zip
 
 1. Update `wxt.config.ts`:
    - `manifest.name`, `manifest.description`
-   - `manifest.permissions` (least privilege — justify each one)
+   - `manifest.permissions` (least privilege - justify each one)
    - `manifest.host_permissions` if you have a content script
 
 2. Replace the placeholder icons in `public/icon/` with real PNGs (16/48/128).
@@ -70,7 +95,7 @@ npm run zip
 
 This template assumes that if your extension needs auth/payments/cross-device sync, the backend lives in a separate **web sidecar app** (another repo built from `tad-template-web` + Supabase + magic link + Gumroad). The extension talks to the sidecar via `fetch` with a session token stored in `browser.storage.local`.
 
-Do not put billing or full OAuth inside the extension — it is fragile and violates Chrome Web Store policies.
+Do not put billing or full OAuth inside the extension - it is fragile and violates Chrome Web Store policies.
 
 ## Manifest V3 notes
 

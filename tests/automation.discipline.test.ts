@@ -31,6 +31,20 @@ function getOutput(result: ReturnType<typeof runTsx>): string {
   return `${result.stdout}${result.stderr}`
 }
 
+function patchBatchDigest(projectRoot: string): string {
+  const pendingDir = path.join(projectRoot, '.discipline', 'patches', 'pending')
+  const files = fs.readdirSync(pendingDir).filter((file) => file.endsWith('.md')).sort()
+  const digest = createHash('sha256')
+  digest.update('discipline.patch_batch.v1\0')
+  for (const file of files) {
+    digest.update(file)
+    digest.update('\0')
+    digest.update(fs.readFileSync(path.join(pendingDir, file)))
+    digest.update('\0')
+  }
+  return digest.digest('hex')
+}
+
 function pathToImport(absPath: string): string {
   // Convert an absolute Windows path to a file:// URL that tsx can resolve.
   return 'file:///' + absPath.replace(/\\/g, '/').replace(/^\//, '')
@@ -39,10 +53,10 @@ function pathToImport(absPath: string): string {
 // The canonical pristine progress.md scaffold, seeded into every fixture so the progress-engine
 // tests are hermetic (independent of the host repo's real progress.md history). See createDisciplineProject.
 const PRISTINE_PROGRESS = [
-  '# progress.md — Current Status + Logs',
+  '# progress.md - Current Status + Logs',
   '',
   '## Current Status',
-  '- Working on: N/A — template initialized',
+  '- Working on: N/A - template initialized',
   '- Next: Fill discipline.md with project switches (Step 1)',
   '- Blockers: none',
   '',
@@ -1374,7 +1388,7 @@ describe('Phase-2 adapters + run reconciler', () => {
     const locksDir = path.join(repo, '.discipline', 'locks')
     expect(!fs.existsSync(locksDir) || !fs.readdirSync(locksDir).some((f) => f.startsWith('slice-')), 'lease released').toBe(true)
     expect(spawnSync('git', ['log', '--oneline'], { cwd: repo, encoding: 'utf8' }).stdout.trim().split('\n').length).toBe(1)
-    expect(spawnSync('git', ['tag'], { cwd: repo, encoding: 'utf8' }).stdout).toMatch(/disc\/run-/)
+    expect(spawnSync('git', ['tag'], { cwd: repo, encoding: 'utf8' }).stdout.trim()).toBe('')
     const ledgerDir = path.join(repo, '.discipline', 'ledger')
     const ledger = fs.readFileSync(path.join(ledgerDir, fs.readdirSync(ledgerDir)[0]!), 'utf8')
     expect(ledger).toMatch(/run_started/)
@@ -1730,14 +1744,14 @@ describe('discipline:progress (update-progress.ts)', () => {
     const projectRoot = createDisciplineProject({ 'SLICE_COMPLETION_PACKET.md': CANONICAL_COMPLETION_PACKET })
     fs.writeFileSync(
       path.join(projectRoot, 'task_plan.md'),
-      '# task_plan.md\n\n### Slice 3 — item list · [done]\n### Slice 4 — offline cache · [ready]\n',
+      '# task_plan.md\n\n### Slice 3 - item list · [done]\n### Slice 4 - offline cache · [ready]\n',
       'utf8',
     )
     expect(runProgress(projectRoot).status).toBe(0)
     const progress = fs.readFileSync(path.join(projectRoot, 'progress.md'), 'utf8')
-    // The old '## Slice N - ' matcher missed '### ... — ...' headings and mislabeled this
+    // The old '## Slice N - ' matcher missed '### ... - ...' headings and mislabeled this
     // "all slices completed"; buyers write slice headings by hand in exactly these styles.
-    expect(progress).toMatch(/- Working on: Slice 4 — offline cache/)
+    expect(progress).toMatch(/- Working on: Slice 4 - offline cache/)
     expect(progress).not.toMatch(/- Working on: all slices completed/)
   })
 
@@ -1832,8 +1846,8 @@ describe('discipline:progress (update-progress.ts)', () => {
     expect(gatesOf('- the suite passes locally but is flaky on CI')).toMatch(/^unverified /)
     // Regression: an English failure-word blocklist used to read these as a FALSE RED, which silently
     // stalled a green pipeline. "red" is Spanish for "network"; "0 errors"/"0 errores" is a pass.
-    expect(gatesOf('- npm run ai:eval — 7/7 (fixture, sin red)')).toMatch(/^unverified /)
-    expect(gatesOf('- npm run gate — verde, 128/128, 0 errores')).toMatch(/^unverified /)
+    expect(gatesOf('- npm run ai:eval - 7/7 (fixture, sin red)')).toMatch(/^unverified /)
+    expect(gatesOf('- npm run gate - verde, 128/128, 0 errores')).toMatch(/^unverified /)
     expect(gatesOf('- npm run test: 128 passed, 0 errors')).toMatch(/^unverified /)
     // The explicit machine-readable GATE_STATE is the ONLY source of a recorded state; it must be one
     // exact, unambiguous declaration. Placeholder, trailing prose, and conflicting declarations are not.
@@ -2220,7 +2234,9 @@ describe('discipline:progress (update-progress.ts)', () => {
     fs.writeFileSync(path.join(pending, '2026-08-09_TASK_PLAN_PATCH_step4.md'), table, 'utf8')
     fs.writeFileSync(path.join(pending, '2026-08-09_TASK_PLAN_SLICES_step4.md'), sections, 'utf8')
 
-    const patched = runTsx('tools/discipline/apply-patch.ts', ['--project-dir', projectRoot])
+    const patched = runTsx('tools/discipline/apply-patch.ts', [
+      '--project-dir', projectRoot, '--approve-sha', patchBatchDigest(projectRoot),
+    ])
     expect(patched.status, getOutput(patched)).toBe(0)
     const plan = fs.readFileSync(path.join(projectRoot, 'task_plan.md'), 'utf8')
     expect(plan).toMatch(/\| 7 \| Shopping list \| M \| 0 \| ready \|/)
@@ -3830,10 +3846,9 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
   }, 60000)
 
 
-  // gate:strict is EXPECTED_FAIL on a pristine scaffold: check-extension-release refuses the empty
-  // `matches: []` the template ships, and it must keep refusing it. The risk with an "it always
-  // fails here" exemption is that nobody notices when it starts failing for a REAL reason, so this
-  // pins both halves: the scaffold fails, and a hydrated project passes.
+  // gate:strict is EXPECTED_FAIL on a pristine scaffold: check-extension-release refuses empty
+  // content-script scope, template identity and placeholder icons. Pin both halves so the expected
+  // scaffold failure cannot hide a broken release checker.
   it('check-extension-release: the pristine scaffold fails, a hydrated project passes', () => {
     const run = (dir: string) => spawnSync(process.execPath, [path.join(repoRoot, 'tools', 'check_extension_release_ready.js')], { cwd: dir, encoding: 'utf8' })
 
@@ -3842,29 +3857,60 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
     expect(pristine.status, getOutput(pristine)).not.toBe(0)
     expect(getOutput(pristine)).toMatch(/matches: \[\]/)
 
-    // (b) The same check against a project that did what the message asks.
+    // (b) A project with explicit scope, release identity, built manifests and real icon bytes.
     const hydrated = fs.mkdtempSync(path.join(os.tmpdir(), 'extension-hydrated-'))
-    fs.mkdirSync(path.join(hydrated, 'entrypoints'), { recursive: true })
-    const content = fs.readFileSync(path.join(repoRoot, 'entrypoints', 'content.ts'), 'utf8')
-    fs.writeFileSync(
-      path.join(hydrated, 'entrypoints', 'content.ts'),
-      content.replace(/matches\s*:\s*\[[\s\S]*?\]/m, "matches: ['https://example.com/*']"),
-      'utf8',
-    )
-    const ready = run(hydrated)
-    expect(ready.status, getOutput(ready)).toBe(0)
-    expect(getOutput(ready)).toMatch(/release scope is explicit/)
+    try {
+      fs.mkdirSync(path.join(hydrated, 'entrypoints'), { recursive: true })
+      const content = fs.readFileSync(path.join(repoRoot, 'entrypoints', 'content.ts'), 'utf8')
+      fs.writeFileSync(
+        path.join(hydrated, 'entrypoints', 'content.ts'),
+        content.replace(/matches\s*:\s*\[[\s\S]*?\]/m, "matches: ['https://example.com/*']"),
+        'utf8',
+      )
+      fs.writeFileSync(path.join(hydrated, 'package.json'), '{"name":"focus-meter","version":"1.0.0"}\n', 'utf8')
+      const manifest = {
+        manifest_version: 3,
+        name: 'Focus Meter',
+        version: '1.0.0',
+        description: 'Track focused browsing sessions.',
+        icons: { '16': 'icon/16.png', '48': 'icon/48.png', '128': 'icon/128.png' },
+      }
+      for (const size of [16, 48, 128]) {
+        const icon = Buffer.alloc(32)
+        Buffer.from('89504e470d0a1a0a', 'hex').copy(icon)
+        icon.write('IHDR', 12, 'ascii')
+        icon.writeUInt32BE(size, 16)
+        icon.writeUInt32BE(size, 20)
+        icon.writeUInt32BE(size, 24)
+        const sourcePath = path.join(hydrated, 'public', 'icon', `${size}.png`)
+        fs.mkdirSync(path.dirname(sourcePath), { recursive: true })
+        fs.writeFileSync(sourcePath, icon)
+        for (const target of ['chrome-mv3', 'firefox-mv3']) {
+          const builtPath = path.join(hydrated, '.output', target, 'icon', `${size}.png`)
+          fs.mkdirSync(path.dirname(builtPath), { recursive: true })
+          fs.writeFileSync(builtPath, icon)
+        }
+      }
+      for (const target of ['chrome-mv3', 'firefox-mv3']) {
+        fs.writeFileSync(path.join(hydrated, '.output', target, 'manifest.json'), `${JSON.stringify(manifest)}\n`, 'utf8')
+      }
 
-    // And <all_urls> is still refused without the documented opt-in, so "hydrated" cannot mean
-    // "asked for everything".
-    fs.writeFileSync(
-      path.join(hydrated, 'entrypoints', 'content.ts'),
-      content.replace(/matches\s*:\s*\[[\s\S]*?\]/m, "matches: ['<all_urls>']"),
-      'utf8',
-    )
-    const broad = run(hydrated)
-    expect(broad.status, getOutput(broad)).not.toBe(0)
-    expect(getOutput(broad)).toMatch(/all_urls/)
+      const ready = run(hydrated)
+      expect(ready.status, getOutput(ready)).toBe(0)
+      expect(getOutput(ready)).toMatch(/release-specific/)
+
+      // <all_urls> is still refused without the documented opt-in.
+      fs.writeFileSync(
+        path.join(hydrated, 'entrypoints', 'content.ts'),
+        content.replace(/matches\s*:\s*\[[\s\S]*?\]/m, "matches: ['<all_urls>']"),
+        'utf8',
+      )
+      const broad = run(hydrated)
+      expect(broad.status, getOutput(broad)).not.toBe(0)
+      expect(getOutput(broad)).toMatch(/all_urls/)
+    } finally {
+      fs.rmSync(hydrated, { recursive: true, force: true })
+    }
   }, 60000)
 
 

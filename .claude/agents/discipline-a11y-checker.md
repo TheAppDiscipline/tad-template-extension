@@ -60,4 +60,4 @@ Return **only** the JSON envelope below as your final message: no prose, no mark
 ## Does not
 
 - Apply fixes automatically.
-- Test the extension on mobile browsers (Kiwi, Firefox mobile) — WCAG applies but automation differs.
+- Test the extension on mobile browsers (Kiwi, Firefox mobile) - WCAG applies but automation differs.

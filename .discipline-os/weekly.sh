@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -e
-echo "Discipline Loop weekly maintenance (extension) — $(date +%Y-%m-%d)"
+echo "Discipline Loop weekly maintenance (extension) - $(date +%Y-%m-%d)"
 echo ""
 echo "=== 1/4 Outdated deps ==="
 npm outdated || true

@@ -1,7 +1,7 @@
 /**
  * Startup validation for environment-like config.
  *
- * Extensions don't have runtime `.env` — config comes from either:
+ * Extensions don't have runtime `.env` - config comes from either:
  *   1. Build-time env via WXT modes (WXT_* env vars baked at build).
  *   2. User-provided config via options page -> browser.storage.sync.
  *

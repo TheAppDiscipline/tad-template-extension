@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -e
-echo "Discipline Loop quarterly maintenance (extension) — $(date +%Y-%m-%d)"
+echo "Discipline Loop quarterly maintenance (extension) - $(date +%Y-%m-%d)"
 echo "Timebox: 1 hour."
 echo ""
 

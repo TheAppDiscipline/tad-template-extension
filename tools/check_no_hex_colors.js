@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * check_no_hex_colors.js — Token gate.
+ * check_no_hex_colors.js - Token gate.
  *
  * Forbids hex/rgb literals outside src/styles/tokens.css. Enforces the
  * visual-tokens-only rule (NN). Scans src/, entrypoints/.
@@ -46,8 +46,8 @@ for (const root of ROOTS) {
 }
 
 if (offenders.length) {
-  console.error('[check-tokens] FAILED — hex/rgb literals outside src/styles/tokens.css:')
+  console.error('[check-tokens] FAILED - hex/rgb literals outside src/styles/tokens.css:')
   for (const f of offenders) console.error('  • ' + f)
   process.exit(1)
 }
-console.log('[check-tokens] OK — no hex/rgb literals outside tokens.css')
+console.log('[check-tokens] OK - no hex/rgb literals outside tokens.css')

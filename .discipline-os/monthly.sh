@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -e
-echo "Discipline Loop monthly maintenance (extension) — $(date +%Y-%m-%d)"
+echo "Discipline Loop monthly maintenance (extension) - $(date +%Y-%m-%d)"
 echo ""
 
 echo "=== 1/6 Backups verification (companion backend) ==="
@@ -10,7 +10,7 @@ echo ""
 echo "=== 2/6 Bundle audit ==="
 if [ -f "package.json" ] && grep -q '"build"' package.json; then
   npm run build || echo "⚠ build failed."
-  echo "Check dist/*.zip size — CWS default <2 MB; hard limit 10 MB."
+  echo "Check dist/*.zip size - CWS default <2 MB; hard limit 10 MB."
 fi
 echo ""
 

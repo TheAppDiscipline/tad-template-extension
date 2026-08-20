@@ -1,4 +1,4 @@
-# task_plan.md — Plan by Phases + Slices
+# task_plan.md - Plan by Phases + Slices
 
 ## 1) Current Goal
 - Verify extension template scaffolding and then define P0 slices from the Step 4 packet.

@@ -23,7 +23,7 @@
     "backend": ["lint", "compile", "test", "check-secrets", "check-https", "check-queries"],
     "schema": ["test", "check-db-types"],
     "permissions": ["test", "check-secrets", "build", "check-manifest"],
-    "deployment-artifact": ["lint", "compile", "test", "build", "build:firefox", "check-manifest", "check-bundle-extension"],
+    "deployment-artifact": ["lint", "compile", "test", "build", "build:firefox", "zip", "check-manifest", "check-bundle-extension", "check-extension-release"],
     "ai": ["lint", "compile", "test", "ai:eval"],
     "docs-only": ["discipline:validate", "test"]
   },

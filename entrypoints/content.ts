@@ -1,4 +1,4 @@
-import { defineContentScript } from 'wxt/sandbox'
+import { defineContentScript } from 'wxt/utils/define-content-script'
 
 export default defineContentScript({
   // Matches kept broad-but-inert by default; narrow this to real target URLs

@@ -1,12 +1,12 @@
 /**
- * Visual tokens — semantic (not raw values in components).
+ * Visual tokens - semantic (not raw values in components).
  *
  * Enforcement: `npm run check-tokens` prohibits hex/rgb literals outside
  * this file. Add new tokens here; reference via `var(--token-name)`.
  */
 
 :root {
-  /* Color — light mode defaults */
+  /* Color - light mode defaults */
   --color-bg: #ffffff;
   --color-fg: #1a1a1a;
   --color-fg-muted: #6b7280;

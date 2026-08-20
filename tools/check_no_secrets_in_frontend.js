@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * check_no_secrets_in_frontend.js — NN #17.1 secrets in bundle.
+ * check_no_secrets_in_frontend.js - NN #17.1 secrets in bundle.
  *
  * Extension source and bundle are fully inspectable by users. Fails if common
  * secret patterns or server-only references appear in shipped code.
@@ -73,8 +73,8 @@ for (const root of ROOTS) {
 }
 
 if (offenders.length) {
-  console.error('[check-secrets] FAILED — secret-like strings found in bundled/client code:')
+  console.error('[check-secrets] FAILED - secret-like strings found in bundled/client code:')
   for (const f of offenders) console.error('  • ' + f)
   process.exit(1)
 }
-console.log('[check-secrets] OK — no secret patterns in bundled/client code')
+console.log('[check-secrets] OK - no secret patterns in bundled/client code')

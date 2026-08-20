@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * check_https_redirect.js — NN #17.4.
+ * check_https_redirect.js - NN #17.4.
  *
  * Flags http:// URLs (non-localhost) in source code that might be hardcoded
  * for sidecar fetches. Extensions should always talk to sidecar over HTTPS.
@@ -38,8 +38,8 @@ for (const root of ROOTS) {
 }
 
 if (offenders.length) {
-  console.error('[check-https] FAILED — non-localhost http:// URLs in source:')
+  console.error('[check-https] FAILED - non-localhost http:// URLs in source:')
   for (const f of offenders) console.error('  • ' + f)
   process.exit(1)
 }
-console.log('[check-https] OK — no insecure http:// URLs')
+console.log('[check-https] OK - no insecure http:// URLs')
