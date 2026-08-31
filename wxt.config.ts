@@ -26,6 +26,18 @@ export default defineConfig({
       page: 'options.html',
       open_in_tab: true,
     },
+    browser_specific_settings: {
+      gecko: {
+        // Replace before release. Firefox MV3 requires a stable extension ID.
+        id: 'replace-me@example.invalid',
+        strict_min_version: '140.0',
+        // The base template does not collect or transmit user data.
+        // Replace "none" with the applicable Firefox categories if that changes.
+        data_collection_permissions: {
+          required: ['none'],
+        },
+      },
+    },
   },
   webExt: {
     // Opens a fresh browser instance on `wxt` dev command

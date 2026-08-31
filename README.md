@@ -4,7 +4,7 @@ Discipline Loop Browser Extension template. **Chromium + Firefox** cross-browser
 
 **Part of The App Discipline.** This template is MIT-licensed (see `LICENSE`) and can be used on its own. The proprietary Discipline Loop vault is not covered by this repository's MIT license. If you received the paid bundle, the vault is the sibling folder `The App Discipline Vault/`; otherwise, verify the current offer and availability in the seller's checkout before relying on it.
 
-**Template release:** v1.0.1. When you create a real extension from this template, keep strict semver in `package.json`; the Chrome Web Store and Firefox AMO require uploading a higher version than the previous one on each upload.
+**Template release prepared:** v1.0.2, not published yet. When you create a real extension from this template, keep strict semver in `package.json`; the Chrome Web Store and Firefox AMO require uploading a higher version than the previous one on each upload.
 
 ## Inicio rápido desde el bundle
 
@@ -67,11 +67,12 @@ npm run build:firefox   # Firefox
 # Deterministic gate before each slice
 npm run gate
 
-# Full gate before deploy
+# Full development gate
 npm run gate:full
 
-# Generate store-ready zips
-npm run zip
+# After configuring release identity, scope, icons, and Firefox metadata:
+# run the fail-closed release gate, then generate and inspect both ZIPs
+npm run release:check
 # -> .output/*-chrome.zip  -> Chrome Web Store
 # -> .output/*-firefox.zip -> Firefox AMO
 ```
@@ -82,6 +83,9 @@ npm run zip
    - `manifest.name`, `manifest.description`
    - `manifest.permissions` (least privilege - justify each one)
    - `manifest.host_permissions` if you have a content script
+   - `browser_specific_settings.gecko.id` with your stable Firefox extension ID
+   - `data_collection_permissions`: keep `required: ['none']` only while the extension collects or transmits no data; otherwise declare the applicable Firefox categories
+   - `strict_min_version: '140.0'` while using Firefox built-in data consent without a legacy fallback
 
 2. Replace the placeholder icons in `public/icon/` with real PNGs (16/48/128).
 
@@ -89,7 +93,9 @@ npm run zip
    - `discipline.md` with the project switches (LANE=EXTENSION confirmed)
    - `task_plan.md` with the P0 slices
 
-4. See The App Discipline vault (sold separately) for the complete workflow.
+4. Run `npm run release:check`. It must pass before treating either ZIP as ready for store review.
+
+5. See The App Discipline vault (sold separately) for the complete workflow.
 
 ## Canonical pattern: free extension + web sidecar
 

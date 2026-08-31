@@ -54,18 +54,37 @@ function validReleaseFixture(root: string) {
     icons: { '16': 'icon/16.png', '48': 'icon/48.png', '128': 'icon/128.png' },
     action: { default_title: 'Focus Meter' },
   }
+  const firefoxManifest = {
+    ...manifest,
+    browser_specific_settings: {
+      gecko: {
+        id: 'focus-meter@example.com',
+        strict_min_version: '140.0',
+        data_collection_permissions: { required: ['none'] },
+      },
+    },
+  }
   write(root, 'entrypoints/content.ts', "export default defineContentScript({ matches: ['https://example.com/*'] })\n")
   for (const size of [16, 48, 128]) {
     const icon = pngHeader(size)
     write(root, `public/icon/${size}.png`, icon)
     for (const target of ['chrome-mv3', 'firefox-mv3']) write(root, `.output/${target}/icon/${size}.png`, icon)
   }
-  for (const target of ['chrome-mv3', 'firefox-mv3']) {
-    write(root, `.output/${target}/manifest.json`, `${JSON.stringify(manifest)}\n`)
-  }
+  write(root, '.output/chrome-mv3/manifest.json', `${JSON.stringify(manifest)}\n`)
+  write(root, '.output/firefox-mv3/manifest.json', `${JSON.stringify(firefoxManifest)}\n`)
 }
 
 describe('extension release artifacts', () => {
+  it('runs the release checker before creating or inspecting store ZIPs', () => {
+    const scripts = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).scripts
+    const route = scripts['release:check']
+    expect(route).toContain('npm run gate:full')
+    expect(route.indexOf('npm run check-extension-release')).toBeGreaterThan(route.indexOf('npm run gate:full'))
+    expect(route.indexOf('npm run zip')).toBeGreaterThan(route.indexOf('npm run check-extension-release'))
+    expect(route.indexOf('npm run check-bundle-extension')).toBeGreaterThan(route.indexOf('npm run zip'))
+    expect(scripts['gate:full']).not.toContain('npm run zip')
+  })
+
   it('fails closed when ZIP artifacts are absent or empty', () => {
     const root = fixture()
     write(root, 'package.json', '{"name":"focus-meter","version":"1.0.0"}\n')
@@ -125,5 +144,28 @@ describe('extension release artifacts', () => {
     expect(result.stderr).toMatch(/matches: \[\]/)
     expect(result.stderr).toMatch(/template identity/)
     expect(result.stderr).toMatch(/shipped placeholder/)
+  })
+
+  it('rejects missing, placeholder, or contradictory Firefox release metadata', () => {
+    const root = fixture()
+    validReleaseFixture(root)
+    const manifestPath = path.join(root, '.output', 'firefox-mv3', 'manifest.json')
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    manifest.browser_specific_settings.gecko = {
+      id: 'replace-me@example.invalid',
+      strict_min_version: '139.0',
+      data_collection_permissions: {
+        required: ['none', 'locationInfo'],
+        optional: ['none'],
+      },
+    }
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`, 'utf8')
+
+    const result = run(releaseChecker, root)
+    expect(result.status).toBe(1)
+    expect(result.stderr).toMatch(/placeholder Firefox extension ID/)
+    expect(result.stderr).toMatch(/Firefox 140 or newer/)
+    expect(result.stderr).toMatch(/sole required category/)
+    expect(result.stderr).toMatch(/must not declare Firefox data permission "none" as optional/)
   })
 })

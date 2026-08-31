@@ -48,7 +48,8 @@ Use `discipline:patch` and `discipline:assemble` manually only as fallback.
 
 ```bash
 npm run gate        # lint + typecheck + tests + visual token gate
-npm run gate:full   # gate + ZIP builds + magic/query/bundle checks + AI fixture eval
+npm run gate:full   # gate + magic/query checks + AI fixture eval; does not create release ZIPs
+npm run release:check # full gate + Firefox release metadata check + ZIP builds + bundle inspection
 npm run gate:visual # opt-in browser/UI verification (e2e/a11y), lane-specific; see package.json. NOT part of npm run gate
 npm run check-db-types  # opt-in (BACKEND_PROVIDER=SUPABASE): DB schema vs committed database.types.ts. In gate:strict; NOT in npm run gate. Fix: npm run db:types:generate
 ```

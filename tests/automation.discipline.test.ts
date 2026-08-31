@@ -3875,6 +3875,16 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
         description: 'Track focused browsing sessions.',
         icons: { '16': 'icon/16.png', '48': 'icon/48.png', '128': 'icon/128.png' },
       }
+      const firefoxManifest = {
+        ...manifest,
+        browser_specific_settings: {
+          gecko: {
+            id: 'focus-meter@example.com',
+            strict_min_version: '140.0',
+            data_collection_permissions: { required: ['none'] },
+          },
+        },
+      }
       for (const size of [16, 48, 128]) {
         const icon = Buffer.alloc(32)
         Buffer.from('89504e470d0a1a0a', 'hex').copy(icon)
@@ -3891,9 +3901,8 @@ describe('Fase 3: hybrid gates (gate --changed)', () => {
           fs.writeFileSync(builtPath, icon)
         }
       }
-      for (const target of ['chrome-mv3', 'firefox-mv3']) {
-        fs.writeFileSync(path.join(hydrated, '.output', target, 'manifest.json'), `${JSON.stringify(manifest)}\n`, 'utf8')
-      }
+      fs.writeFileSync(path.join(hydrated, '.output', 'chrome-mv3', 'manifest.json'), `${JSON.stringify(manifest)}\n`, 'utf8')
+      fs.writeFileSync(path.join(hydrated, '.output', 'firefox-mv3', 'manifest.json'), `${JSON.stringify(firefoxManifest)}\n`, 'utf8')
 
       const ready = run(hydrated)
       expect(ready.status, getOutput(ready)).toBe(0)

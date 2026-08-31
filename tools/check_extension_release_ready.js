@@ -89,6 +89,35 @@ function inspectManifest(manifestPath) {
     const builtIcon = join(manifestPath, '..', ...iconPath.split('/'))
     if (!existsSync(builtIcon)) errors.push(`${label} references missing icon ${iconPath}.`)
   }
+
+  if (label.includes('firefox-mv3/manifest.json')) inspectFirefoxManifest(manifest, label)
+}
+
+function inspectFirefoxManifest(manifest, label) {
+  const gecko = manifest.browser_specific_settings?.gecko
+  const id = gecko?.id
+  if (typeof id !== 'string' || !id.trim()) {
+    errors.push(`${label} must define browser_specific_settings.gecko.id for Firefox MV3.`)
+  } else if (/replace-me|example\.invalid|tad-template|discipline loop/i.test(id)) {
+    errors.push(`${label} must replace the placeholder Firefox extension ID before release.`)
+  }
+
+  const minimum = Number.parseFloat(gecko?.strict_min_version)
+  if (!Number.isFinite(minimum) || minimum < 140) {
+    errors.push(`${label} must set browser_specific_settings.gecko.strict_min_version to Firefox 140 or newer for built-in data consent.`)
+  }
+
+  const permissions = gecko?.data_collection_permissions
+  const required = permissions?.required
+  const optional = permissions?.optional
+  if (!Array.isArray(required) || required.length === 0 || required.some((value) => typeof value !== 'string' || !value.trim())) {
+    errors.push(`${label} must declare non-empty Firefox data_collection_permissions.required.`)
+  } else if (required.includes('none') && (required.length !== 1 || (Array.isArray(optional) && optional.length > 0))) {
+    errors.push(`${label} may use Firefox data permission "none" only as the sole required category with no optional categories.`)
+  }
+  if (Array.isArray(optional) && optional.includes('none')) {
+    errors.push(`${label} must not declare Firefox data permission "none" as optional.`)
+  }
 }
 
 function readPackage() {
