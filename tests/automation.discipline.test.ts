@@ -651,6 +651,64 @@ describe('Phase-1 control plane: policy hooks, stop gate, session header, checkp
     expect(getOutput(missing)).toMatch(/not found/)
   })
 
+  // Regression: approve used to drop --reason on the floor (the dispatcher called
+  // approveCheckpoint without options), so the only place to record a motive was
+  // --summary at create time -- a different field, written before the decision.
+  // Writing under ## Decision by hand is no workaround either: fillDecision
+  // replaces that whole section.
+  it('checkpoint: approve records --reason in the Decision and the ledger', () => {
+    const gitProbe = spawnSync('git', ['--version'], { encoding: 'utf8' })
+    if (gitProbe.status !== 0) return
+
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'discipline-checkpoint-app-'))
+    const git = (args: string[]) => spawnSync('git', args, { cwd: repo, encoding: 'utf8' })
+    git(['init', '-q'])
+    git(['config', 'user.email', 'ci@example.com'])
+    git(['config', 'user.name', 'CI'])
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'x\n', 'utf8')
+    git(['add', '-A'])
+    git(['commit', '-q', '-m', 'init'])
+
+    const create = runTsx('tools/discipline/checkpoint.ts', [
+      'create', '--slice', 'S3', '--kind', 'scope', '--summary', 'Scope check for S3', '--project-dir', repo,
+    ])
+    expect(create.status, getOutput(create)).toBe(0)
+    const packetsDir = path.join(repo, '.discipline', 'packets')
+    const file = fs.readdirSync(packetsDir).find((f) => f.startsWith('CHECKPOINT_SCOPE_S3_'))
+    expect(file, 'checkpoint file must exist').toBeTruthy()
+
+    const approve = runTsx('tools/discipline/checkpoint.ts', [
+      'approve', file!, '--reason', 'risk accepted by owner', '--project-dir', repo,
+    ])
+    expect(approve.status, getOutput(approve)).toBe(0)
+    const approved = fs.readFileSync(path.join(packetsDir, file!), 'utf8')
+    expect(approved).toMatch(/status: approved/)
+    expect(approved).toMatch(/## Decision\nAPPROVED at \d{4}-\d{2}-\d{2}T[^\n]*\nReason: risk accepted by owner/)
+    // The Summary is a distinct field and keeps its own text.
+    expect(approved).toMatch(/## Summary\nScope check for S3/)
+
+    // The ledger carries the same reason, so the motive survives outside the packet.
+    const ledgerDir = path.join(repo, '.discipline', 'ledger')
+    const ledger = fs.readFileSync(path.join(ledgerDir, fs.readdirSync(ledgerDir)[0]!), 'utf8')
+    expect(ledger).toMatch(/"event":"checkpoint_decided"[^\n]*"reason":"risk accepted by owner"/)
+
+    // Approving without --reason still works and writes no Reason line.
+    const plain = runTsx('tools/discipline/checkpoint.ts', ['create', '--slice', 'S4', '--kind', 'scope', '--project-dir', repo])
+    expect(plain.status, getOutput(plain)).toBe(0)
+    const plainFile = fs.readdirSync(packetsDir).find((f) => f.startsWith('CHECKPOINT_SCOPE_S4_'))
+    const plainApprove = runTsx('tools/discipline/checkpoint.ts', ['approve', plainFile!, '--project-dir', repo])
+    expect(plainApprove.status, getOutput(plainApprove)).toBe(0)
+    expect(fs.readFileSync(path.join(packetsDir, plainFile!), 'utf8')).not.toMatch(/Reason:/)
+
+    // USAGE advertises the flag for approve, not only for reject.
+    const usage = runTsx('tools/discipline/checkpoint.ts', ['approve', '--project-dir', repo])
+    expect(usage.status).toBe(1)
+    expect(getOutput(usage)).toMatch(/approve <packet-file-or-id> \[--reason/)
+    // The discipline wrapper is a second help surface over the same dispatcher.
+    const wrapperHelp = runTsx('tools/discipline/cli.ts', ['--help'])
+    expect(getOutput(wrapperHelp)).toMatch(/approve <packet-file-or-id> \[--reason/)
+  })
+
   // The three hook scripts honor the stdin JSON protocol when run as a process.
   it('hooks: honor the stdin JSON protocol (deny shape, block shape, additionalContext)', () => {
     // pre-tool-guard: a deny decision emits permissionDecision: deny on stdout.

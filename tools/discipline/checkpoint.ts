@@ -367,7 +367,7 @@ export function rejectCheckpoint(root: string, arg: string, opts: DecideOptions 
 const USAGE = [
   'Usage:',
   '  discipline:checkpoint -- create --slice <id> --kind pre-commit|scope|deploy [--summary "..."]',
-  '  discipline:checkpoint -- approve <packet-file-or-id>',
+  '  discipline:checkpoint -- approve <packet-file-or-id> [--reason "..."]',
   '  discipline:checkpoint -- reject  <packet-file-or-id> [--reason "..."]',
 ].join('\n');
 
@@ -387,7 +387,7 @@ export function runCheckpoint(root: string, argv: string[]): number {
     case 'approve': {
       const target = args._[1] !== undefined ? String(args._[1]) : '';
       if (!target) { disciplineWarn(`Missing <packet-file-or-id>.\n${USAGE}`); return 1; }
-      approveCheckpoint(root, target);
+      approveCheckpoint(root, target, { reason: args.reason ? String(args.reason) : undefined });
       return 0;
     }
     case 'reject': {

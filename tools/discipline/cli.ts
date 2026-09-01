@@ -92,7 +92,7 @@ function printHelp(): void {
       '                   when the change touches a surface the slice packet does not declare.',
       '  lease            Slice lease: `lease acquire|release|status <slice-id> [--force]`',
       '  checkpoint       Approval packet: `checkpoint create --slice <id> --kind pre-commit|scope|deploy`',
-      '  approve|reject   Decide a checkpoint: `approve <packet-file-or-id>` / `reject <..> [--reason "..."]`',
+      '  approve|reject   Decide a checkpoint: `approve <packet-file-or-id> [--reason "..."]` / `reject <..> [--reason "..."]`',
       '  run              Reconciler: one stateless tick for one slice (level 0/1 plumbing without --with-llm)',
       '  step4-origin     Resolve the Step 4 origin (input|reentry|feedback|hardening); exits 0 chosen / 3 ambiguous / 2 invalid',
       '  migrate-packets  Legacy Step 5 packets -> the v2 contract. Dry-run by default; --write applies it',
