@@ -1,0 +1,43 @@
+name: Gate Launch
+
+# Runs the launch gate (gate:strict + scorecard + prod audit).
+# It only enforces once you prepare a launch scorecard (.discipline/scorecard.yaml),
+# so the template repo stays green until you reach PROFILE=LAUNCH.
+#
+# This extension lane has no backend of its own (sidecar pattern), so there is no
+# cross-user RLS test here; that test lives in the web/mobile/desktop lanes (and in
+# your sidecar web app, if you add one). The LLM security review lives in
+# security-review.yml (opt-in: set the ANTHROPIC_API_KEY secret to enable it).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate-launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Launch gate (enforced only when a scorecard.yaml exists)
+        run: |
+          if [ -f .discipline/scorecard.yaml ]; then
+            echo "scorecard.yaml found - running gate:launch."
+            npm run gate:launch
+          else
+            echo "No .discipline/scorecard.yaml yet. gate:launch enforces at PROFILE=LAUNCH; skipping."
+          fi

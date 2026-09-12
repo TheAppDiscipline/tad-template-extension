@@ -1,0 +1,145 @@
+# .discipline/scorecard.template.yaml
+#
+# Gate D (Launch) scorecard template. The validator does not read this file;
+# it looks for `.discipline/scorecard.yaml`, so this file is an inert starting point.
+#
+# When you prepare LAUNCH (PROFILE=LAUNCH in discipline.md):
+#   1. Copy this file to `.discipline/scorecard.yaml`.
+#   2. Fill each item with `status` (done | not_done | deferred | not_applicable).
+#      For critical items marked `done`, add `evidence` (URL, path, or verifiable note).
+#      `not_applicable` is NOT a free pass: it is only accepted alongside an
+#      `applies_when` condition that evaluates to false (see the rule summary below).
+#   3. Run `npm run discipline:validate:launch` until it passes with 0 errors.
+#
+# Complete launch rules are part of The App Discipline vault, sold separately.
+#
+# Validator rule summary:
+#   - launch.critical `done` without `evidence` -> FAIL.
+#   - launch.critical `not_done` or `deferred` -> FAIL, except `blocking: false` (warning).
+#       For honest handoffs (infrastructure that cannot exist locally yet: public deploy,
+#       Sentry, uptime, HSTS, etc.), use `deferred` + `blocking: false` + `deferred_reason`.
+#       Never mark something `done` if you did not actually do it.
+#   - `not_applicable` without `applies_when` -> FAIL (critical) / warning (recommended).
+#       An item only stops applying when a switch says so, and the validator checks that
+#       switch against discipline.md. Declaring an item inapplicable with nothing to check
+#       is an unverifiable claim, so it is rejected rather than silently passed.
+#       With `applies_when` present: false -> the item is skipped; true + `not_applicable`
+#       -> FAIL (escape attempt).
+#   - launch.recommended `deferred` requires `deferred_reason` + future `expires_on`.
+#
+# Newly copied, this scorecard intentionally fails Gate D because every item is `not_done`.
+# That is the correct starting state until you complete each item with evidence or defer it
+# explicitly with `blocking: false` and a `deferred_reason`.
+
+meta:
+  project: ""                 # your app name
+  version: "1.0"
+  profile_target: "LAUNCH"
+  last_updated: ""            # YYYY-MM-DD
+  next_review: ""             # YYYY-MM-DD
+
+# ---------------------------------------------------------------------------
+# Gate D - Launch. Critical items block public launch.
+# ---------------------------------------------------------------------------
+launch:
+  critical:
+    - id: L01
+      name: "Privacy Policy published and reachable from /privacy"
+      status: not_done
+      evidence: null
+      notes: null
+
+    - id: L02
+      name: "Terms of Service published and reachable from /terms"
+      status: not_done
+      evidence: null
+
+    - id: L03
+      name: "Account deletion works end-to-end"
+      status: not_done
+      evidence: null
+
+    - id: L04
+      name: "Sentry or equivalent receives production errors"
+      status: not_done
+      evidence: null
+
+    - id: L05
+      name: "Uptime monitor is active with an alert configured"
+      status: not_done
+      evidence: null
+
+    - id: L06
+      name: "HTTPS is required, CORS is not '*', and secrets stay server-side"
+      status: not_done
+      evidence: null
+
+    - id: L06b
+      name: "HSTS header is configured on HTTPS responses"
+      status: not_done
+      evidence: null
+
+    - id: L07
+      name: "Rollback tested at least once"
+      status: not_done
+      evidence: null
+
+    - id: L08
+      name: "Support channel is active and expected response time is communicated"
+      status: not_done
+      evidence: null
+
+    - id: L09a
+      name: "Lighthouse Accessibility > 90"
+      status: not_done
+      evidence: null
+
+    # Conditional items apply only when the switch is enabled in discipline.md.
+    # The validator requires them as critical when applies_when is true.
+    - id: L16
+      name: "Secure billing: signed webhook verified, premium access checked server-side, event idempotency covered, and localStorage bypass tested negative"
+      status: not_done
+      evidence: null
+      applies_when: "BILLING == true"
+      notes: "Only if your app charges money. Set `- BILLING: true` in discipline.md. Evidence: webhook PR/commit, idempotency test, and denied-bypass test."
+
+    - id: L17
+      name: "Private storage verified: user B in incognito cannot open user A's private file and the signed URL expires (npm run test:storage:privacy)"
+      status: not_done
+      evidence: null
+      applies_when: "UPLOADS == true"
+      notes: "Only if your app uploads private files. Set `- UPLOADS: true` in discipline.md. Evidence: `npm run test:storage:privacy` output plus a denied-access screenshot."
+
+  # -------------------------------------------------------------------------
+  # Recommended items warn when missing, but do not block launch.
+  # -------------------------------------------------------------------------
+  recommended:
+    - id: L09
+      name: "Analytics activation and week-1 retention are measured"
+      status: not_done
+
+    - id: L10
+      name: "Basic load test completed with 50 concurrent users"
+      status: not_done
+
+    - id: L11
+      name: "Lighthouse Performance > 70 on mobile"
+      status: not_done
+
+    - id: L13
+      name: "FAQ or public docs cover 3 common problems"
+      status: not_done
+
+    - id: L14
+      name: "Status page or incident communication mechanism exists"
+      status: not_done
+
+    - id: L15
+      name: "Structured backend logs include user_id and request_id"
+      status: not_done
+
+# ---------------------------------------------------------------------------
+# Gate E - PROD: add a `prod:` section (critical + conditional) only when you
+# prepare PROFILE=PROD. The complete production checklist is part of the full
+# The App Discipline vault, sold separately.
+# ---------------------------------------------------------------------------

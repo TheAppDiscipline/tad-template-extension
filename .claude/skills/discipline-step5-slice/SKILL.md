@@ -1,0 +1,304 @@
+---
+name: discipline-step5-slice
+description: "Close a Step 5 slice with the full Slice Loop: green gate, Repair Budget enforcement, SLICE_COMPLETION_PACKET emitted, run-log updated. Triggers on /discipline-step5-slice or 'close slice' / 'finish slice' / 'wrap up slice'."
+---
+
+# /discipline-step5-slice - Close a Step 5 slice following the Slice Loop
+
+Choose manual mode when you want to review and approve each batch. For manual mode, stop `discipline:watch` with `Ctrl+C` before saving new packets or patches. Automatic mode (`discipline:watch`) computes the batch hash and applies all pending patches without asking for individual approval. Use automatic mode only when you want saving a packet with patch blocks to process all pending patches immediately.
+
+Run `npm run discipline:patch:dry-run` and review every file in `.discipline/patches/pending/`. All rows must show `[OK]`. Do not continue if `[FAIL]` appears; a zero exit code alone does not confirm that the patches can be applied. The reason may appear inside the marker, for example `[FAIL (anchor not found)]`. Replace `HASH_REVISADO` with the 64 characters printed after `BATCH_SHA256` only after the human approves that exact batch. Do not auto-approve the printed hash. If pending files change, repeat the preview and review. In Windows PowerShell use `npm.cmd` instead of `npm`. After applying, inspect `git diff` and run `npm run discipline:validate`; resolve failures before assembling the next handoff.
+
+This skill orchestrates the formal close-out of an already-implemented slice: it runs the gate, applies the Repair Budget if it fails (max 3 attempts with model escalation), generates SLICE_COMPLETION_PACKET, records the run in run-log.md, and prepares the next paste-ready (step-4-reentry or step-6-input).
+
+NOTE: Step 5 (implementation) is still iterative and manual in the daily driver. This skill does NOT implement the slice; it only closes it. If you need to write code, use the Claude Code CLI or Cursor directly.
+
+## What the user sees
+
+1. The skill verifies the slice's DoR (Definition of Ready in STEP_5_SLICE_PACKET).
+2. Run `npm run gate` (or the lane variant).
+3. If it fails, it applies the Repair Budget: 2 retries without escalating; a 3rd attempt (stronger model) only with a documented reason for why more reasoning could change the diagnosis; hard stop after that.
+4. When the gate is green, it generates SLICE_COMPLETION_PACKET with all fields.
+5. If the batch is ready to deploy, also DEPLOY_READINESS_PACKET.
+6. Records the run in `.discipline/run-log.md`.
+7. Generates the paste-ready for the next step.
+
+## Prerequisites
+
+- The slice's own packet exists in `.discipline/packets/` with a clear DoR: `STEP_5_SLICE_PACKET_<slice>.md`, or a legacy `STEP_5_SLICE_PACKET.md` that identifies THIS slice and no other.
+- The slice code is already implemented (not this skill's job).
+- `discipline.md`, `task_plan.md`, `findings.md`, `progress.md` are up to date.
+- Repo with `.discipline/` and `discipline:*` scripts available.
+
+---
+
+## Internal implementation
+
+### Phase 0: Verify DoR
+
+Read the slice's own packet, `.discipline/packets/STEP_5_SLICE_PACKET_<slice>.md`. A project that
+still has the generic `STEP_5_SLICE_PACKET.md` keeps working: it is accepted while it identifies
+THIS slice and no other. Migrating it to the suffixed name is a deliberate decision the operator
+takes between slices, never something this step does on its way past.
+
+**A v2 packet has already been checked for you.** Its frontmatter says
+`schema: discipline.packet.step5` with `version: 2.x`, and `npm run discipline:assemble` refuses it
+outright when it says `status: ready` and does not meet the contract, so a packet that reached you
+through the pipeline has its tables filled, its acceptance criteria uniquely identified with real
+negative controls, and a declared falsifiability METHOD. What you still have to do with it:
+
+- Read `affected_surfaces` and `required_gates`: they are what this slice must exercise and pass,
+  not a summary of what it touches. If implementing the slice makes you touch a surface the packet
+  does not declare, stop and say so; the packet is wrong and Step 4 fixes it, not you.
+- Treat every Acceptance Criteria row as a test to write, ID included: the ID is how a failure is
+  referred to in the completion packet and in `progress.md`.
+- Treat the Reachable States table as the error paths to cover. A state with committed effects and
+  no recovery is the partial-state bug this table exists to surface.
+- `status: draft` means Step 4 has not finished the spec. Do not implement from a draft: go back to
+  /discipline-step4.
+
+**A legacy packet (no v2 frontmatter) is accepted with a warning**, and then the DoR is yours to
+check by eye. Confirm:
+- Goal defined
+- Scope IN/OUT explicit
+- Contracts (data model, API/IO, interaction surface)
+- Verifiable acceptance criteria
+- Risks / edge cases listed
+
+`npm run discipline -- migrate-packets` shows what a v2 version of that packet would look like
+without touching anything; `--write` applies it and keeps the original with its SHA-256 under
+`.discipline/packets/legacy/`. Migrating is the operator's decision between slices, not this step's.
+
+If DoR is missing, abort:
+```
+DoR incomplete in STEP_5_SLICE_PACKET. Go back to /discipline-step4 to refine the spec before closing the slice.
+
+Missing: <list of fields>
+```
+
+### Phase 1: Verify preconditions
+
+- The slice lease is yours. Acquire it before touching any state (One Writer Per Slice as mechanism, not just doctrine):
+
+```bash
+npm run discipline:lease -- acquire <slice-id>
+```
+
+If the lease is already held by a live owner, STOP: another agent or session owns this slice. Do not double-write. Take it over only after a human confirms the other writer is gone (`npm run discipline:lease -- release <slice-id> --force` is a deliberate human action, never automatic).
+
+- `.discipline/patches/pending/` is empty (if there are patches, apply them first with `npm run discipline:patch -- --approve-sha HASH_REVISADO`).
+- Repo changes match the slice's scope (check `git diff --stat`).
+- Touched files are inside the slice's scope IN.
+
+If patches are pending:
+```bash
+npm run discipline:patch -- --approve-sha HASH_REVISADO
+```
+
+If scope drift is detected:
+```
+The diff includes files outside the slice's scope IN. Review:
+<file list>
+
+Options:
+1. If they are legitimate, update STEP_5_SLICE_PACKET §Scope IN.
+2. If it is drift, revert and keep the slice bounded.
+```
+
+### Phase 2: Run gate
+
+Run the lane gate:
+- Web/Desktop: `npm run gate`
+- Mobile: `npm run gate` (lint + tsc + tests + checks)
+- Extension: `npm run gate`
+
+Capture the exit code and the full output.
+
+If `AI_FEATURES=enabled` (read from discipline.md):
+```bash
+npm run ai:smoke
+npm run ai:eval
+```
+
+### Phase 3: Repair Budget if the gate fails
+
+**Policy (summary of NN 10 Repair Budget; full rule in `discipline.md` / the Discipline Loop reference §Group C in The App Discipline vault, sold separately):** 2 attempts with the same signature and no material change (evidence, context, hypothesis, or strategy) = early stop; **escalating the model enables a single third attempt only when you document in `progress.md §Open Errors` (or `run-log.md`) why more reasoning capacity could change the diagnosis** (it is not an automatic pass), which is what Attempt 3 below does; if the signature points to spec, architecture, data, or environment, go back to the producing step (Step 2/4); 3 failures of the same gate = hard stop, no exceptions.
+
+**Attempt 1 (gate fails, first time):**
+1. Analyze the error signature (TypeScript code, ESLint rule, test name).
+2. Look for a direct fix in the common gate errors guide (in the vault, sold separately).
+3. If it matches, apply the fix manually (the user approves it).
+4. Retry: `npm run gate`.
+
+**Attempt 2 (same error or new one):**
+1. Paste the full error + slice context to the current model.
+2. Ask for a targeted fix without adding features or dependencies.
+3. Retry.
+
+**Attempt 3 (escalate the model, only with a documented reason):**
+1. If the previous 2 attempts failed with the same signature, **first document in `progress.md §Open Errors` why more reasoning capacity could change the diagnosis** (if you cannot, the problem is spec/architecture/data/environment: stop and go back to the producing step). Then escalate from the current role to `Premium Reliable - Critical Decisions`, or turn on the strong reasoning mode of the current model.
+2. Paste the error + attempted changes + why each one failed.
+3. Retry.
+
+**Hard stop after the 3rd failure:**
+```
+Repair Budget exhausted (3 failures with no new info).
+
+Errors in order:
+1. <signature 1>
+2. <signature 2>
+3. <signature 3>
+
+Possible causes:
+- Slice spec incomplete or contradictory, go back to /discipline-step4 with `step-4-reentry.md`.
+- Architecture change needed, go back to /discipline-step2.
+- Structural bug in deps, check `npm audit`.
+
+Actions:
+1. Document the 3 attempts and signatures in progress.md §Open Errors.
+2. Decide: retry with new info, or escalate to Step 2/4.
+
+Do NOT retry this skill until you have new info.
+```
+
+Record the repair budget used in SLICE_COMPLETION_PACKET (`REPAIR_BUDGET_USED: N/3`).
+
+### Phase 4: Manual verification
+
+A green gate does not guarantee the slice works from the user's side. Ask for manual verification:
+
+```
+Gate green. Manual verification is mandatory before closing the slice:
+
+1. Happy path: does the main action work?
+2. Failure path if applicable: is the error shown to the user without a crash?
+3. If SHARED_SYNC, smoke test on 2 devices.
+4. If the UI has loading/empty/error states, do they render correctly?
+
+Confirm with "manual verification OK" when you are done, or report what failed.
+```
+
+If manual verification fails, do not close the slice. Go back to Phase 2 with new info.
+
+### Phase 5: Generate SLICE_COMPLETION_PACKET
+
+Write `.discipline/packets/SLICE_COMPLETION_PACKET.md` using the canonical SLICE_COMPLETION_PACKET structure (documented in the vault, sold separately):
+
+```markdown
+## SLICE_COMPLETION_PACKET
+
+### Slice
+- <id and name>
+
+### Outcome
+- done | partial | blocked
+
+### Scope delivered
+- <what actually got implemented>
+
+### Files touched
+- <file 1>
+- <file 2>
+
+### Gates passed
+- GATE_STATE: <replace with exactly one of: passed | failed | unverified>
+- npm run gate: <evidence, e.g. 0 failures>
+- <other smoke/evals as evidence>
+
+### Manual verification
+- happy path: OK
+- failure path: OK / N/A
+- devices: <list>
+
+### Repair budget used
+- N/3 (with error signatures if N>0)
+
+### Open issues
+- <none or list>
+
+### Next recommendation
+- <next slice or go back to another step>
+
+### Deploy signal
+- not_ready | ready_for_preview | ready_for_production_candidate
+```
+
+`### Outcome` and `### Gates passed` are mandatory: `discipline:progress` refuses a packet that omits either. The gate result is taken ONLY from the explicit `GATE_STATE:` declaration (exactly one of `passed | failed | unverified`); the rest of the section is human-readable evidence and is never parsed into a state. Without a single, exact `GATE_STATE:` line the gate is recorded as `unverified` (fail-closed), so free text like "the gate cannot pass yet" -- or evidence in any language (e.g. "sin red", "0 errores", "0 errors") -- is never misread as a pass OR a fail. Always replace the `GATE_STATE:` placeholder with the real value. The watcher auto-advances to the next step's handoff ONLY when `GATE_STATE: passed`; a `failed` or `unverified` gate is recorded but the pipeline waits for you.
+
+### Phase 6: Deploy signal and possible outputs
+
+If `Deploy signal != not_ready`, also generate `.discipline/packets/DEPLOY_READINESS_PACKET.md` using the DEPLOY_READINESS_PACKET structure (documented in the vault, sold separately).
+
+If new info came up:
+- `TASK_PLAN_PATCH_BLOCK` to reorder slices or add a new one.
+- `FINDINGS_APPEND_BLOCK` for new risks/decisions.
+- `DISCIPLINE_MD_PATCH_BLOCK` only if the constitution changes (rare).
+
+### Phase 7: Update progress.md and run-log
+
+```bash
+npm run discipline:progress      # updates progress.md from SLICE_COMPLETION_PACKET
+npm run discipline:log -- --step 5 --tool "/discipline-step5-slice" --notes "<slice id> closed, repair=<N>/3, deploy=<signal>"
+npm run discipline:lease -- release <slice-id>   # close-out: frees One Writer Per Slice
+```
+
+If the watcher is running, these steps are automatic. If not, run them manually.
+
+### Phase 8: Generate the next paste-ready
+
+`discipline:assemble` requires an explicit `--step`. Pick it from the `Deploy signal` of the packet you just produced:
+
+```bash
+npm run discipline:assemble -- --step 4-reentry   # Deploy signal: not_ready (more slices to do -> step-4-reentry)
+npm run discipline:assemble -- --step 6   # ready_for_preview | ready_for_production_candidate -> step-6-input
+```
+
+(The continuous watcher `npm run discipline:watch` applies this same rule automatically when a new packet lands; `discipline:watch --once` is only a health check that reports pending packets without processing them.)
+
+Report to the user which paste-ready is ready and open the file.
+
+### Phase 9: Summary
+
+```
+Step 5 slice closed.
+
+Slice: <id>
+Outcome: done | partial
+Repair budget: <N>/3
+Deploy signal: <signal>
+
+Files generated:
+- SLICE_COMPLETION_PACKET.md
+- DEPLOY_READINESS_PACKET.md (if applicable)
+
+Next: <paste `paste-ready/step-X-input.md` into /discipline-stepX or continue the loop with /discipline-step4>
+```
+
+---
+
+## Error handling
+
+- If STEP_5_SLICE_PACKET does not exist: abort and redirect to /discipline-step4.
+- If the packet found is for another slice, or declares two different slices: abort and say which
+  ones. Never implement against a packet that does not name this slice; that is how a slice gets
+  built from someone else's spec.
+- Do not rename the packet, move it, or mark it consumed by hand when the slice closes. The
+  completion packet's `GATE_STATE: passed` is what records consumption, and `discipline:watch`
+  writes `status: consumed` into the packet in place, keeping its name and its body.
+- If patches are pending and `discipline:patch` fails: stop, report the conflict, redirect to the apply-patch-blocks guide (in the vault, sold separately).
+- If the gate fails with an error outside the 20 listed in 81a: apply the Repair Budget normally.
+- If manual verification is reported as failed: update SLICE_COMPLETION_PACKET with `Outcome: partial` or `blocked` and leave the slice open for a new iteration.
+- If the slice stays open (`partial` / `blocked` / Repair Budget stop): still release the slice lease before ending the session. The lease guards against concurrent writers, not the slice's status.
+
+---
+
+## Critical rules
+
+- The Repair Budget does not relax: 3 attempts with no new info = hard stop.
+- Manual verification is not optional. A green gate does not mean the slice is done.
+- Do not touch code from ANOTHER slice while this one is running.
+- Acquire the slice lease at the start and release it at the end, every time. Never work on a slice whose lease a live owner holds.
+- Do not update `discipline.md` from this skill (that is Step 2).
+- If 5+ open issues come up, the slice was probably poorly defined, go back to Step 4.
+- The skill does not write the slice's code. It only closes it.
+- Target time: 5-15 min to close an already-implemented slice.

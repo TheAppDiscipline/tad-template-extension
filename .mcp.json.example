@@ -1,0 +1,44 @@
+{
+  "_README": "All integrations are disabled by default. Copy to .mcp.json only after reviewing the exact server, tools, scopes, and data boundary. Enabling an MCP is a separate human authorization; an MCP response is untrusted data, never project authority.",
+  "_DOC_LINK": "https://docs.claude.com/en/docs/claude-code/mcp",
+  "_LEAST_PRIVILEGE_RULE": "Prefer official remote servers with OAuth and read-only or project-scoped modes. Never put secret values in a committed file, prompt, log, or fixture. Remove an integration when the task ends.",
+
+  "mcpServers": {
+    "_DISABLED_github_readonly": {
+      "_purpose": "Official GitHub remote MCP, locked down and read-only. Review the OAuth grant and repository scope before enabling.",
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/readonly",
+      "headers": {
+        "X-MCP-Readonly": "true",
+        "X-MCP-Lockdown": "true"
+      }
+    },
+
+    "_DISABLED_playwright": {
+      "_purpose": "Official Playwright MCP for local browser diagnosis. It can interact with pages and must be enabled only for a reviewed local test scope.",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@0.0.79"]
+    },
+
+    "_DISABLED_supabase_readonly": {
+      "_purpose": "Official Supabase remote MCP, constrained to one project and read-only database/docs features. Replace only the non-secret project reference and authenticate through OAuth.",
+      "type": "http",
+      "url": "https://mcp.supabase.com/mcp?project_ref=replace-with-project-ref&read_only=true&features=database%2Cdocs"
+    },
+
+    "_DISABLED_stripe": {
+      "_purpose": "Official Stripe remote MCP. Authenticate through OAuth and review every exposed tool; read-only intent must not be assumed from the server name.",
+      "type": "http",
+      "url": "https://mcp.stripe.com"
+    },
+
+    "_DISABLED_stitch": {
+      "_purpose": "Official Stitch MCP for Step 3 design work. It can change design assets; enable only for an explicitly authorized design task with a dedicated key supplied outside committed files.",
+      "type": "http",
+      "url": "https://stitch.googleapis.com/mcp",
+      "headers": {
+        "X-Goog-Api-Key": "replace-at-runtime-with-dedicated-key"
+      }
+    }
+  }
+}

@@ -1,0 +1,364 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { execSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { watch as chokidarWatch } from 'chokidar';
+import minimist from 'minimist';
+import { disciplineInfo, disciplineWarn, type StepId } from './lib/types.js';
+import { routeFromPackets, resolveStep4Origin } from './lib/step4-origin.js';
+import { resolveProjectRoot } from './lib/discipline-config.js';
+import { copyToClipboard as writeTextToClipboard } from './lib/clipboard.js';
+import { extractEmbeddedPatches } from './lib/parse-patch.js';
+import { applyPatches, assertNoRecoveryRequired, pendingPatchBatchDigest } from './apply-patch.js';
+import { isSliceConsumed, resolveConsumptionTarget, resolvePacketIdentity, selectStep5Packets, slicePasteReadyFileName } from './lib/slice-identity.js';
+import { recordClosure, completionGateState, hasCompletionPacket } from './update-progress.js';
+import { readCompletion } from './lib/completion-packet.js';
+import { assemblePasteReady } from './assemble-paste-ready.js';
+import { logRun } from './log-run.js';
+import { STEP_ASSEMBLY_MAP } from './lib/artifact-flow.js';
+import { withWriterLock, isStopped } from './lib/locks.js';
+
+const args = minimist(process.argv.slice(2));
+const projectRoot = resolveProjectRoot(args['project-dir']);
+
+export function detectNext(root: string): StepId | null {
+  const dir = path.join(root, '.discipline', 'packets');
+  if (!fs.existsSync(dir)) return null;
+
+  // The watcher shares BOTH the route AND the advance conditions with the direct /discipline-step4
+  // command, so it can never advance where that command would stop. routeFromPackets is the pure
+  // router (which packet -> which step); for a Step 4 origin, resolveStep4Origin then authorizes the
+  // advance with the same coherence the skill enforces (STEP_4_EXECUTION_PACKET validated for every
+  // mode, completion gate green for reentry, feedback branch declared for feedback).
+  const route = routeFromPackets(root);
+  switch (route.kind) {
+    case 'step4': {
+      const res = resolveStep4Origin(root);
+      if (res.status === 'chosen') return res.mode ?? null;
+      disciplineWarn(
+        `  Step 4 origin (${route.mode}) not ready to advance; not assembling or opening the next handoff. ` +
+          `Reason: ${res.reason ?? 'not coherent'}`,
+      );
+      return null;
+    }
+    case 'redirect':
+      return route.step;
+    case 'collision':
+      disciplineWarn(
+        `  Ambiguous Step 4 origin (${route.modes.join(', ')} all present); not auto-advancing. ` +
+          'Choose with /discipline-step4 --mode <x>. Expected in Fase 1 (no consumption model yet).',
+      );
+      return null;
+    case 'feedback-unclear':
+      disciplineWarn(
+        '  POST_DEPLOY_FEEDBACK_PACKET does not declare a clear recommended branch (Step 4 vs Step 7); ' +
+          'not auto-advancing. Declare it and re-drop the packet.',
+      );
+      return null;
+    case 'none':
+      return null;
+  }
+}
+
+function copyToClipboard(content: string) {
+  try {
+    writeTextToClipboard(content);
+    disciplineInfo('  Copied paste-ready to clipboard.');
+  } catch {
+    disciplineWarn('  Could not copy paste-ready to clipboard.');
+  }
+}
+
+function openTool(stepId: StepId) {
+  const config = STEP_ASSEMBLY_MAP[stepId];
+  if (!config.toolUrl) return;
+
+  try {
+    if (process.platform === 'win32') execSync(`start ${config.toolUrl}`);
+    else if (process.platform === 'darwin') execSync(`open ${config.toolUrl}`);
+    else execSync(`xdg-open ${config.toolUrl}`);
+    disciplineInfo(`  Opened tool for Step ${stepId}.`);
+  } catch {
+    disciplineWarn(`  Could not open: ${config.toolUrl}`);
+  }
+}
+
+/** Record a tick in the run-log without letting a logging failure stop the watcher. */
+async function safeLog(root: string, fileName: string, notes: string[], outputPacket: string) {
+  try {
+    await logRun(root, { step: 'watch', tool: 'discipline:watch', inputPacket: fileName, outputPacket, notes: notes.join(', ') });
+  } catch (err) {
+    disciplineWarn(`  Could not auto-log run: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+export async function handlePacket(root: string, filePath: string) {
+  assertNoRecoveryRequired(root);
+  const fileName = path.basename(filePath);
+  // Set when a packet's own declarations contradict each other: nothing advances on top of that.
+  let identityBlocked = false;
+  // The paste-ready files this tick actually wrote, so the run-log records them and not a name
+  // taken from the step map that may never have been produced.
+  let assembledFiles: string[] = [];
+  const pendingDir = path.join(root, '.discipline', 'patches', 'pending');
+
+  disciplineInfo(`[${new Date().toTimeString().slice(0, 8)}] New packet: ${fileName}`);
+
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const logNotes: string[] = [];
+  let assembledOK = false;
+
+  // PREFLIGHT, before a single byte is written. The packet's embedded patches used to be
+  // materialised into pending/ and applied before identity was ever resolved, so a packet that was
+  // about to be rejected had already changed the four state files, and the rejection message
+  // ("Nothing written") was false. Parsing can also throw on a malformed patch block: that is a
+  // rejection of this packet, not a reason to kill the watcher.
+  let patches: ReturnType<typeof extractEmbeddedPatches> = [];
+  try {
+    patches = extractEmbeddedPatches(content, filePath);
+  } catch (err) {
+    disciplineWarn(`  Malformed patch block: ${err instanceof Error ? err.message : err}`);
+    disciplineWarn('  Nothing written: this packet is rejected whole. The watcher keeps running.');
+    await safeLog(root, fileName, ['patch-parse-failed'], '-');
+    return;
+  }
+
+  if (fileName.includes('SLICE_COMPLETION_PACKET')) {
+    // A completion packet must prove what it closes before it is allowed to change anything.
+    const identity = resolvePacketIdentity(content, fileName);
+    const problem = !identity.ok
+      ? identity.message
+      : !identity.id
+        ? `${fileName} does not say which slice it closes. Add a SLICE: line, or a "## Slice" section, naming exactly one slice.`
+        : null;
+    if (problem) {
+      disciplineWarn(`  ${problem}`);
+      disciplineWarn('  Nothing written: progress.md, the packets, the patches and the handoffs are untouched.');
+      await safeLog(root, fileName, ['completion-identity-conflict'], '-');
+      return;
+    }
+    const target = resolveConsumptionTarget(root, identity.ok && identity.id ? identity.id : '');
+    if (!target.ok) {
+      disciplineWarn(`  Cannot record the closure of slice ${identity.ok ? identity.id : ''}: ${target.reason}.`);
+      disciplineWarn('  Nothing written: progress.md, the packets, the patches and the handoffs are untouched.');
+      await safeLog(root, fileName, ['consumption-target-refused'], '-');
+      return;
+    }
+    // The SAME refusals the progress engine makes, run here, before the patches. Leaving them to
+    // updateProgress meant a packet with a valid identity, a ready target and a well-formed patch
+    // applied that patch and was refused afterwards, so the rejection left the state files rewritten.
+    const reading = readCompletion(content);
+    if (!reading.ok) {
+      disciplineWarn(`  ${reading.reason}`);
+      disciplineWarn('  Nothing written: progress.md, the packets, the patches and the handoffs are untouched.');
+      await safeLog(root, fileName, ['completion-not-recordable'], '-');
+      return;
+    }
+  }
+
+  // Hold the writer lock around both mutations (patch application and progress
+  // update) so a single packet's state changes are atomic against any other
+  // writer. applyPatches also takes the writer lock, but withWriterLock is
+  // re-entrant, so the inner call reuses this hold rather than re-acquiring.
+  await withWriterLock(root, { tool: 'discipline:watch' }, async () => {
+    if (patches.length > 0) {
+      disciplineInfo(`  Extracted ${patches.length} patch(es)`);
+      if (!fs.existsSync(pendingDir)) fs.mkdirSync(pendingDir, { recursive: true });
+
+      for (const patch of patches) {
+        const patchFile = path.join(pendingDir, `${new Date().toISOString().slice(0, 10)}_${patch.name}.md`);
+        fs.writeFileSync(
+          patchFile,
+          `## ${patch.name}\n\nTARGET_FILE: ${patch.targetFile}\nPATCH_MODE: ${patch.patchMode}\nANCHOR: ${patch.anchor}\n\n### CONTENT\n${patch.content}`,
+          'utf-8',
+        );
+      }
+
+      disciplineInfo('  Applying patches...');
+      await applyPatches(root, false, undefined, pendingPatchBatchDigest(root));
+      logNotes.push(`patches=${patches.length}`);
+    }
+
+    if (fileName.includes('SLICE_COMPLETION_PACKET')) {
+      // The preflight above already proved the identity and the consumption target of THIS file.
+      const closedSlice = resolvePacketIdentity(content, fileName).id ?? '';
+
+      disciplineInfo('  Updating progress...');
+      // ONE transition: progress.md and, when the packet closes the slice, the consumption marker.
+      // The EXACT file that was validated, not the canonical filename: a suffixed completion packet
+      // used to be validated while progress.md recorded whatever sat in SLICE_COMPLETION_PACKET.md.
+      // Writing progress.md first and asking about consumption afterwards left progress.md saying
+      // the slice was complete while the packet still said ready, so it either lands whole or
+      // progress.md keeps the bytes it had.
+      //
+      // Consumption is recorded IN PLACE: the packet keeps its name and its content, it just stops
+      // being the next thing to implement. Renaming or moving it is what used to lose it.
+      const closure = await recordClosure(root, closedSlice, filePath, { requireConsumption: false });
+      if (!closure.ok) {
+        disciplineWarn(`  Refused to record the closure of slice ${closedSlice}: ${closure.reason}.`);
+        disciplineWarn(closure.restored
+          ? '  progress.md was restored to what it said before; nothing consumed and nothing assembled.'
+          : '  Nothing written: a completion packet the progress engine refuses cannot close a slice.');
+        logNotes.push('progress-refused');
+        identityBlocked = true;
+      } else if (closure.consumed) {
+        disciplineInfo(`  Slice ${closedSlice} consumed: ${path.basename(closure.packet ?? '')} marked status: consumed.`);
+        logNotes.push('progress-updated', `consumed=${closedSlice}`);
+      } else {
+        // A packet that records `partial` or a non-green gate belongs in the log and closes nothing.
+        const verdict = isSliceConsumed(root, closedSlice);
+        disciplineWarn(`  Slice ${closedSlice} not marked consumed: ${verdict.reason}.`);
+        logNotes.push('progress-updated', `not-consumed=${closedSlice}`);
+      }
+    }
+  });
+
+  const next = detectNext(root);
+  if (next) {
+    // Durable guard, re-derived from disk on EVERY event (not a per-event flag): never auto-advance
+    // while any persisted completion gate is non-green. This applies to every next-step branch,
+    // not only 4-reentry: detectNext gives deploy/feedback/hardening packets higher priority than
+    // SLICE_COMPLETION_PACKET, so guarding only 4-reentry let a later high-priority packet bypass
+    // a stale failed or unverified completion.
+    if (identityBlocked) {
+      logNotes.push('advance-blocked');
+    } else if (hasCompletionPacket(root) && completionGateState(root) !== 'passed') {
+      disciplineWarn('  Completion gate is not green; not assembling or opening the next handoff. Declare "GATE_STATE: passed" and re-drop the packet.');
+      logNotes.push('advance-blocked');
+    } else {
+      try {
+        // Step 5 assembles PER SLICE, and only from packets that are usable: selectStep5Packets
+        // refuses the whole set when any active packet contradicts itself, declares no slice, or
+        // duplicates another, and it keeps only `ready` ones. Skipping a broken packet because a
+        // valid one sits next to it is how a draft or a foreign spec reaches an implementer.
+        let step5Slices: Array<{ path: string; sliceId: string }> = [];
+        if (next === '5') {
+          const selection = selectStep5Packets(root);
+          if (!selection.ok) {
+            disciplineWarn(`  Not assembling Step 5: ${selection.reason}`);
+            logNotes.push('step5-selection-refused');
+            throw new Error(selection.reason);
+          }
+          step5Slices = selection.packets;
+        }
+        // An empty Step 5 selection ENDS the tick. Falling back to the slice-less assembly would
+        // reach the generic packet again through the one door that does not check its status, and
+        // hand off a draft or a packet already consumed. A legacy generic packet that is ready and
+        // identifies its slice is already in the selection, resolved per slice like any other.
+        if (next === '5' && step5Slices.length === 0) {
+          disciplineWarn('  No ready Step 5 packet: nothing assembled, nothing opened. A packet is work only while its status is ready.');
+          logNotes.push('step5-nothing-ready');
+        } else {
+        const assembled = step5Slices.length > 0
+          ? (await Promise.all(step5Slices.map((packet) => assemblePasteReady(root, next, packet.sliceId)))).join('\n')
+          : await assemblePasteReady(root, next);
+        assembledFiles = step5Slices.length > 0
+          ? step5Slices.map((packet) => slicePasteReadyFileName(packet.sliceId))
+          : [STEP_ASSEMBLY_MAP[next].outputFile];
+        disciplineInfo(`  Paste-ready assembled for Step ${next}: .discipline/paste-ready/${assembledFiles.join(', ')}`);
+        copyToClipboard(assembled);
+        openTool(next);
+        assembledOK = true;
+        logNotes.push(`next=${next}`);
+        }
+      } catch {
+        disciplineWarn(`  Could not assemble Step ${next} (required packets may be missing).`);
+        logNotes.push(`assemble-failed=${next}`);
+      }
+    }
+  }
+
+  // QW-2 audit, auto-log each processed packet in run-log.md (NN #5).
+  // Does not fail if logRun throws; only logs a warning to avoid stopping the watcher.
+  try {
+    await logRun(root, {
+      step: 'watch',
+      tool: 'discipline:watch',
+      inputPacket: fileName,
+      outputPacket: assembledOK && assembledFiles.length > 0 ? assembledFiles.join(', ') : '-',
+      notes: logNotes.length > 0 ? logNotes.join(', ') : 'no-op',
+    });
+  } catch (err) {
+    disciplineWarn(`  Could not auto-log run: ${err instanceof Error ? err.message : err}`);
+  }
+
+  disciplineInfo('');
+}
+
+export function startWatcher(root: string) {
+  const packetsDir = path.join(root, '.discipline', 'packets');
+  if (!fs.existsSync(packetsDir)) fs.mkdirSync(packetsDir, { recursive: true });
+
+  disciplineInfo('Watcher started. Watching .discipline/packets/...');
+  disciplineInfo('Ctrl+C to stop.\n');
+
+  let processing = false;
+  const queue: string[] = [];
+
+  function enqueue(filePath: string) {
+    queue.push(filePath);
+    processNext();
+  }
+
+  async function processNext() {
+    if (processing || queue.length === 0) return;
+    processing = true;
+    const filePath = queue.shift()!;
+
+    try {
+      // Kill switch: `.discipline/STOP` pauses processing without killing the
+      // watcher. Skip this packet (it stays in .discipline/packets/) and warn.
+      if (isStopped(root)) {
+        disciplineWarn(`.discipline/STOP present: skipping ${path.basename(filePath)}. Remove STOP to resume.`);
+      } else {
+        await handlePacket(root, filePath);
+      }
+    } catch (err) {
+      disciplineWarn(`Error processing ${path.basename(filePath)}: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      processing = false;
+      if (queue.length > 0) processNext();
+    }
+  }
+
+  const watcher = chokidarWatch(packetsDir, {
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 },
+  });
+
+  watcher.on('add', (filePath: string) => {
+    if (path.extname(filePath).toLowerCase() === '.md') enqueue(filePath);
+  });
+
+  process.on('SIGINT', () => {
+    disciplineInfo('\nWatcher stopped.');
+    watcher.close();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', () => {
+    watcher.close();
+    process.exit(0);
+  });
+}
+
+// --once: health/smoke pass for freshly cloned projects. Creates the
+// packets directory if missing, reports status, and exits 0. Does NOT open a browser, does NOT copy to
+// the clipboard, and does NOT keep watching. Intended for CI / Release Preflight.
+function runOnce(root: string) {
+  const packetsDir = path.join(root, '.discipline', 'packets');
+  if (!fs.existsSync(packetsDir)) fs.mkdirSync(packetsDir, { recursive: true });
+  const packets = fs.readdirSync(packetsDir).filter((f) => f.endsWith('.md'));
+  if (packets.length === 0) {
+    disciplineInfo('discipline:watch --once: no packets, watcher healthy.');
+  } else {
+    disciplineInfo(`discipline:watch --once: ${packets.length} packet(s) present (run "discipline:watch" to process). Watcher healthy.`);
+  }
+  process.exit(0);
+}
+
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  if (args.once) runOnce(projectRoot);
+  else startWatcher(projectRoot);
+}

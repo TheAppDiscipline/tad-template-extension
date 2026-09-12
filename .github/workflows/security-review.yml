@@ -1,0 +1,30 @@
+name: Security Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write  # comment findings on the PR
+
+jobs:
+  security-review:
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+
+      - name: Skip when ANTHROPIC_API_KEY is not configured
+        if: ${{ env.ANTHROPIC_API_KEY == '' }}
+        run: echo "ANTHROPIC_API_KEY is not configured; skipping optional security review."
+
+      - uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda # main snapshot 2026-08-31
+        if: ${{ env.ANTHROPIC_API_KEY != '' }}
+        with:
+          comment-pr: true
+          claude-api-key: ${{ env.ANTHROPIC_API_KEY }}
